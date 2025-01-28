@@ -11,7 +11,7 @@ tags: [design, design-patterns]
 
 It's been 30 years since the Gang of Four published their seminal book on design patterns, called "Design Patterns: Elements of Reusable Object-Oriented Software". In the last three decades, the software industry has evolved significantly, and so have the best practices and patterns that we use to build software. Are the design patterns from the 90s still relevant today? Many software engineers would argue that they are not. In this series of articles, we will revisit some of the most popular design patterns and see how they evolved over time and which is the real legacy they left us. Since we have to start somewhere, let's start with the Builder Pattern.
 
-## Setting the Stage
+## The Problem
 
 In the book "[Design Patterns: Elements of Reusable Object-Oriented Software](https://books.google.it/books/about/Design_Patterns.html?id=6oHuKQe3TjQC&redir_esc=y)", each pattern describes a problem that occurs over and over again in our environment, and then describes the core of the solution to that problem, in such a way that you can use this solution a million times over, without ever doing it the same way twice. So, before we dive into the Builder Pattern, let's first understand the problem it tries to solve.
 
@@ -46,8 +46,170 @@ public record Cost(
     BigDecimal amount,
     Currency currency
 ) {}
+
+public enum Currency {
+    USD,
+    EUR,
+    GBP
+}
 ```
 
 Even in this simple example, we can see that creating a `Travel` object is not trivial. We have many properties, some of which are mandatory, and some are optional. For example, a travel can be one-way or round-trip, and we have to specify the number of passengers, the list of adults, the list of children, and the list of ancillaries. The `Passenger` and `Ancillary` objects are also complex objects, with their own properties.
 
+One-way flights don't have a `returnDate`, for example, so we could create a new constructor reflecting this fact:
+
+```java
+public record Travel(
+    String origin,
+    String destination,
+    LocalDate departureDate,
+    LocalDate returnDate,
+    int numberOfPassengers,
+    List<Passenger> adults,
+    List<Passenger> children) {
+
+    // Constructor for one-way flights
+    public Travel(
+        String origin,
+        String destination,
+        LocalDate departureDate,
+        int numberOfPassengers,
+        List<Passenger> adults,
+        List<Passenger> children) {
+
+        this(origin, destination, departureDate, null, numberOfPassengers, adults, children);
+    }
+}
+```
+
+As you see the constructor for the one-way flight is just a copy of the original constructor with the `returnDate` parameter set to `null`. We can reiterate the reasoning and create a new constructor for the round-trip flights that has only adults as passengers:
+
+```java
+public record Travel(
+    String origin,
+    String destination,
+    LocalDate departureDate,
+    LocalDate returnDate,
+    int numberOfPassengers,
+    List<Passenger> adults,
+    List<Passenger> children) {
+
+    // Constructor for one-way flights
+    public Travel(
+        String origin,
+        String destination,
+        LocalDate departureDate,
+        int numberOfPassengers,
+        List<Passenger> adults,
+        List<Passenger> children) {
+
+        this(origin, destination, departureDate, null, numberOfPassengers, adults, children);
+    }
+
+    // Constructor for round-trip flights with only adults
+    public Travel(
+        String origin,
+        String destination,
+        LocalDate departureDate,
+        LocalDate returnDate,
+        int numberOfPassengers,
+        List<Passenger> adults) {
+
+        this(origin, destination, departureDate, returnDate, numberOfPassengers, adults, List.of());
+    }
+}
+```
+
+We can stop here, but we can see that the number of constructors will grow exponentially with the number of optional properties. The one problem we have here is called constructor telescoping. The constructor telescoping anti-pattern occurs when a class has multiple constructors, each calling a more specific constructor in the hierarchy, with the last one calling all the others. This is a common problem in object-oriented programming, and it can make the code hard to read and maintain.
+
+Another problem we have here is that we have many different properties that have the same type. For example, origin and destination are both strings, and departureDate and returnDate are both LocalDate. This can lead to confusion when creating the object. Look at the following client code that creates a `Travel` object for a trip from Milan to New York, departing on October 1st, 2025, and returning on October 15th, 2025, with two passengers, John Doe and Jane Doe:
+
+```java
+Travel travel = new Travel(
+    "Milan",
+    "New York",
+    LocalDate.of(2025, 10, 15),
+    LocalDate.of(2025, 10, 1),
+    2,
+    List.of(
+        new Passenger(
+            "John Doe",
+            LocalDate.of(1980, 1, 1),
+            "123456789",
+            List.of(
+                new Ancillary(
+                    "Extra Baggage",
+                    new Cost(BigDecimal.valueOf(50), Currency.EUR)
+                )
+            )
+        )
+    ),
+    List.of(
+        new Passenger(
+            "Jane Doe",
+            LocalDate.of(1985, 1, 1),
+            "987654321",
+            List.of(
+                new Ancillary(
+                    "Extra Legroom",
+                    new Cost(BigDecimal.valueOf(100), Currency.EUR)
+                )
+            )
+        )
+    )
+);
+```
+
+Everything's fine, isn't it? I guess many of you didn't notice that the `departureDate` and `returnDate` are swapped. This is a common mistake that can happen when creating complex objects with many properties of the same type.
+
+Another best practice to keep in mind is that we should not expose the internal details of an object to the client code. In particular, we don't want the client code to know the logic of how the object is created. Any validation logic, default values, or constraints should be hidden from the client code. Let's deliberately validate the `Travel` object in the client code:
+
+```java
+var travel = Travel(/* ... */)
+if (travel.origin() == null) {
+    throw new IllegalArgumentException("Origin is required");
+}
+if (travel.destination() == null) {
+    throw new IllegalArgumentException("Destination is required");
+}
+if (travel.departureDate() == null) {
+    throw new IllegalArgumentException("Departure date is required");
+}
+// ...and so on
+```
+
 If we leave the creation of the `Travel` object to the client code, we will end up with a lot of boilerplate code, and the client code will be tightly coupled with the `Travel` object. We will copy and paste the same code over and over again, and if we need to change the `Travel` object, we will have to change all the client code that creates it.
+Nevertheless, it's a violation of the DRY (Don't Repeat Yourself) principle.
+
+ We should avoid to create invalid objects in the first place, and we should not expose the internal details of the object to the client code. Then, we can move the validation logic inside the `Travel` primary constructor:
+
+```java
+public record Travel(
+    String origin,
+    String destination,
+    LocalDate departureDate,
+    LocalDate returnDate,
+    int numberOfPassengers,
+    List<Passenger> adults,
+    List<Passenger> children
+) {
+    public Travel {
+        if (origin == null) {
+            throw new IllegalArgumentException("Origin is required");
+        }
+        if (destination == null) {
+            throw new IllegalArgumentException("Destination is required");
+        }
+        if (departureDate == null) {
+            throw new IllegalArgumentException("Departure date is required");
+        }
+        // ...and so on
+    }
+}
+```
+
+However, as we said, we can have both a one-way and a round-trip flight, we need different validation logic for each case.
+
+In the mid 90s, the Builder Pattern was introduced to solve the above problems with the technologies of the time. Let's see how it works.
+
+## Ladies and Gentlemen, the Builder Pattern
