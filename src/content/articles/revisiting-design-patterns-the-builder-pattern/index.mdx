@@ -193,6 +193,7 @@ public record Travel(
     List<Passenger> adults,
     List<Passenger> children
 ) {
+    // Compact constructor
     public Travel {
         if (origin == null) {
             throw new IllegalArgumentException("Origin is required");
@@ -208,8 +209,56 @@ public record Travel(
 }
 ```
 
-However, as we said, we can have both a one-way and a round-trip flight, we need different validation logic for each case.
+However, as we said, we can have both a one-way and a round-trip flight, we need different validation logic for each case. So, we can't put the validation logic inside the primary constructor.
 
 In the mid 90s, the Builder Pattern was introduced to solve the above problems with the technologies of the time. Let's see how it works.
 
 ## Ladies and Gentlemen, the Builder Pattern
+
+The builder pattern addresses quite all the problems we have seen so far. We can cite the book of the Gang of Four to define the pattern:
+
+> Separate the construction of a complex object from its representation so that the same construction process can create different representations.
+
+Let's tackle the definition one sentence at time. The first one says that we need to separate the construction of a complex object from its representation. We can call the object we can build the product of the building process. In our scenario, the product represents the `Travel` class. To adhere to the first part of the definition, we need to avoid clients of the product to build (or instantiate) the product directly. So, first of all, we need to make the `Travel` constructor private. Since `record` classes in Java don't allow private constructors, we must turn the `Travel` type into a regular class:
+
+```java
+public class Travel {
+    private final String origin;
+    private final String destination;
+    private final LocalDate departureDate;
+    private final LocalDate returnDate;
+    private final int numberOfPassengers;
+    private final List<Passenger> adults;
+    private final List<Passenger> children;
+
+    private Travel(
+        String origin,
+        String destination,
+        LocalDate departureDate,
+        LocalDate returnDate,
+        int numberOfPassengers,
+        List<Passenger> adults,
+        List<Passenger> children
+    ) {
+        this.origin = origin;
+        this.destination = destination;
+        this.departureDate = departureDate;
+        this.returnDate = returnDate;
+        this.numberOfPassengers = numberOfPassengers;
+        this.adults = adults;
+        this.children = children;
+    }
+}
+```
+
+Now, nobody can create a `Travel` object directly. We need to introduce a new class, called the builder, that will be responsible for creating the `Travel` object. The builder class must have access to the private constructor of the `Travel` class. In Java we can achieve this by making the builder class a nested class of the `Travel` class:
+
+```java
+public class Travel {
+    // Omissis
+
+    public static class Builder {
+        // Omissis
+    }
+}
+```
