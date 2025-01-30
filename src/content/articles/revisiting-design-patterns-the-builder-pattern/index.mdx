@@ -429,11 +429,8 @@ public class Travel {
             if (destination == null || origin.isBlank()) {
                 throw new IllegalStateException("Destination is required");
             }
-            if (departureDate == null departureDate.isBefore(LocalDate.now())) {
+            if (departureDate == null || departureDate.isBefore(LocalDate.now())) {
                 throw new IllegalStateException("Departure date is required and must be in the future");
-            }
-            if (returnDate != null && returnDate.isBefore(departureDate)) {
-                throw new IllegalStateException("Return date must be after departure date");
             }
             if (adults.isEmpty()) {
                 throw new IllegalStateException("At least one adult is required");
@@ -452,6 +449,133 @@ public class Travel {
 }
 ```
 
-Do you remember when we didn't find a way to express the different validations needed by the one-way and round-trip flights with the naive solution? The builder pattern solve the problem by allowing us to define more than one Builder class. We can create a `OneWayTravelBuilder` and a `RoundTripTravelBuilder` class, each with its own validation logic:
+Do you remember when we didn't find a way to express the different validations needed by the one-way and round-trip flights with the naive solution? The builder pattern solve the problem by allowing us to define more than one Builder class. We can create a `OneWayTravelBuilder` and a `RoundTripTravelBuilder` class, both extending a common `Buider` interface, each with its own validation logic:
 
-TODO
+```java
+public class Travel {
+    // Omissis
+
+    public interface Builder {
+
+        Builder withOrigin(String origin);
+        Builder withDestination(String destination);
+        Builder withDepartureDate(LocalDate departureDate);
+        Builder withReturnDate(LocalDate returnDate);
+        Builder withAdult(Passenger adult);
+        Builder withChild(Passenger child);
+
+        Travel build();
+    }
+
+    public static class OneWayTravelBuilder implements Builder {
+        // We omitted the properties and the methods to set them
+
+        public Travel build() {
+            if (origin == null || origin.isBlank()) {
+                throw new IllegalStateException("Origin is required");
+            }
+            if (destination == null || origin.isBlank()) {
+                throw new IllegalStateException("Destination is required");
+            }
+            if (departureDate == null || departureDate.isBefore(LocalDate.now())) {
+                throw new IllegalStateException("Departure date is required and must be in the future");
+            }
+            if (adults.isEmpty()) {
+                throw new IllegalStateException("At least one adult is required");
+            }
+            return new Travel(
+                origin,
+                destination,
+                departureDate,
+                null,
+                adults.size() + children.size(),
+                adults,
+                children
+            );
+        }
+    }
+
+    public static class RoundTripTravelBuilder implements Builder {
+        // We omitted the properties and the methods to set them
+
+        public Travel build() {
+            if (origin == null || origin.isBlank()) {
+                throw new IllegalStateException("Origin is required");
+            }
+            if (destination == null || origin.isBlank()) {
+                throw new IllegalStateException("Destination is required");
+            }
+            if (departureDate == null || departureDate.isBefore(LocalDate.now())) {
+                throw new IllegalStateException("Departure date is required and must be in the future");
+            }
+            if (returnDate == null || returnDate.isBefore(departureDate)) {
+                throw new IllegalStateException("Return date is required and must be after departure date");
+            }
+            if (adults.isEmpty()) {
+                throw new IllegalStateException("At least one adult is required");
+            }
+            return new Travel(
+                origin,
+                destination,
+                departureDate,
+                returnDate,
+                adults.size() + children.size(),
+                adults,
+                children
+            );
+        }
+    }
+}
+```
+
+The client code can create a `Travel` object using the `OneWayTravelBuilder` or the `RoundTripTravelBuilder` class, and the right validation logic will be applied. To be fair, we don't need the products to share a common interface. The main point is that they must share the same building process.
+
+The original pattern went a little further, introducing a `Director` class that is responsible for the construction process. If the aim is to completely decouple the client code from the building process of the product, the `Director` class can be useful. It exposes a single method by which a client can create the needed product, passing the builder as a parameter.
+
+For example, imagine we want to retrieve a `Travel` object from a JSON string. We can create a `TravelJsonParser` class that will be responsible for parsing the JSON string and creating the `Travel` object. The `TravelJsonParser` class will have a `parse` method that using a `Builder` object as a parameter, will use it to create the `Travel` object.
+
+Let's see how the `TravelJsonParser` class can be implemented:
+
+```java
+public class TravelJsonParser {
+
+    private final Travel.Builder builder;
+
+    public TravelJsonParser(Travel.Builder builder) {
+        this.builder = builder;
+    }
+
+    public void parse(String json) {
+        JsonParser jsonParser = new JsonFactory().createJsonParser(jsonStr);
+        while(jsonParser.nextToken() != JsonToken.END_OBJECT){
+            String name = jsonParser.getCurrentName();
+            if("origin".equals(name)) {
+                jsonParser.nextToken();
+                builder.withOrigin(jsonParser.getText());
+            }
+            if("destination".equals(name)) {
+                jsonParser.nextToken();
+                builder.withOrigin(jsonParser.getText());
+            }
+           // And so on...
+        }
+    }
+}
+```
+
+The above code uses the [Jackson library](https://github.com/FasterXML/jackson) to parse the JSON string. The `TravelJsonParser` class takes a `Builder` object as a parameter in the constructor. Clearly, we want use the library in that way in production. We'll probability ask to an instance of the `ObjectMapper` to read the JSON string and return directly a `Travel` object. However, the example is useful to understand the concept.
+
+Then, the client code can set up the stage and retrieve a `Travel` object from a JSON string like this:
+
+```java
+// We'll create a one-way travel
+Travel.Builder builder = new Travel.OneWayTravelBuilder();
+// We can reuse the same director for different flavors of the building process
+TravelJsonParser travelJsonParser = new TravelJsonParser(builder);
+// The director orchestrates the building process
+travelJsonParser.parse(json);
+// Finally. the client retrieves the product
+Travel travel = builder.build();
+```
+
+If we want to create a travel from an XML or a YAML string, we can create a `TravelXmlParser` or a `TravelYamlParser` class, respectively, changing only the parsing logic. The building process remains the same.
