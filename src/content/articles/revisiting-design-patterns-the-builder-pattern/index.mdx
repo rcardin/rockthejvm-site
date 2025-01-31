@@ -713,3 +713,47 @@ var johnDoe = new Passenger.Builder()
 ```
 
 Until we run the code we don't know that we forgot to set the `birthDate` property. The code will compile, but it will throw an `IllegalArgumentException` at runtime. If we used the constructor, the code wouldn't compile, and we would have fixed the error before running the code. Some of you may argue that a test would have caught the error. However, our goal is to catch errors at compile time, not at runtime. Tests are written by humans (or worse, AIs) and can contain errors. The compiler is a machine and doesn't make mistakes.
+
+We said that having constructors with many parameters of primitive types can lead to confusion. The builder pattern partially solve the problem by giving a name to each method that sets a property. However, it's still in charge of the developer to give the right value to the method. The problem has a name, and it's called the Primitive Obsession code smell. The builder pattern is not the solution to this particular kind of code smell. To solve it, we must define a type for each primitive type we use in our code. For example, we can define a `PassportNumber` type for the `passportNumber` property of the `Passenger` type, and a `Name` type for the `name` property. This way, we can't swap the properties by mistake, and we can't give a wrong value to a property:
+
+```java
+public record Name(String value) {
+    public Name {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Name is required");
+        }
+    }
+}
+
+public record PassportNumber(String value) {
+    public PassportNumber {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Passport number is required");
+        }
+    }
+}
+
+public record Passenger(
+    Name name,
+    LocalDateTime birthDate,
+    PassportNumber passportNumber,
+    List<Ancillary> ancillaries
+) {}
+```
+
+In many languages the above small classes are called value classes. They are immutable objects that represent a value. In both Scala and Kotlin it's possible to define a value class that at compile time is translated to a primitive type for performance reasons.
+
+In Scala 3 we can define a value class using [opaque types](https://rockthejvm.com/articles/scala-3-opaque-types) like this:
+
+```scala 3
+opaque type Name = String
+```
+
+Whereas, in Kotlin we can define a value classes through [inline value classes](https://rockthejvm.com/articles/scala-3-opaque-types) like this:
+
+```kotlin
+@JvmInline
+value class Name(private val value: String)
+```
+
+Java will have its own value objects representation (and much more!!!) once the [Project Valhalla](https://openjdk.org/projects/valhalla/) will be completed.
