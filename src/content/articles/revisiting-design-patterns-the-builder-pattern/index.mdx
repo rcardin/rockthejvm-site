@@ -424,16 +424,16 @@ public class Travel {
 
         public Travel build() {
             if (origin == null || origin.isBlank()) {
-                throw new IllegalStateException("Origin is required");
+                throw new IllegalArgumentException("Origin is required");
             }
             if (destination == null || origin.isBlank()) {
-                throw new IllegalStateException("Destination is required");
+                throw new IllegalArgumentException("Destination is required");
             }
             if (departureDate == null || departureDate.isBefore(LocalDateTime.now())) {
-                throw new IllegalStateException("Departure date is required and must be in the future");
+                throw new IllegalArgumentException("Departure date is required and must be in the future");
             }
             if (adults.isEmpty()) {
-                throw new IllegalStateException("At least one adult is required");
+                throw new IllegalArgumentException("At least one adult is required");
             }
             return new Travel(
                 origin,
@@ -472,16 +472,16 @@ public class Travel {
 
         public Travel build() {
             if (origin == null || origin.isBlank()) {
-                throw new IllegalStateException("Origin is required");
+                throw new IllegalArgumentException("Origin is required");
             }
             if (destination == null || origin.isBlank()) {
-                throw new IllegalStateException("Destination is required");
+                throw new IllegalArgumentException("Destination is required");
             }
             if (departureDate == null || departureDate.isBefore(LocalDateTime.now())) {
-                throw new IllegalStateException("Departure date is required and must be in the future");
+                throw new IllegalArgumentException("Departure date is required and must be in the future");
             }
             if (adults.isEmpty()) {
-                throw new IllegalStateException("At least one adult is required");
+                throw new IllegalArgumentException("At least one adult is required");
             }
             return new Travel(
                 origin,
@@ -500,19 +500,19 @@ public class Travel {
 
         public Travel build() {
             if (origin == null || origin.isBlank()) {
-                throw new IllegalStateException("Origin is required");
+                throw new IllegalArgumentException("Origin is required");
             }
             if (destination == null || origin.isBlank()) {
-                throw new IllegalStateException("Destination is required");
+                throw new IllegalArgumentException("Destination is required");
             }
             if (departureDate == null || departureDate.isBefore(LocalDateTime.now())) {
-                throw new IllegalStateException("Departure date is required and must be in the future");
+                throw new IllegalArgumentException("Departure date is required and must be in the future");
             }
             if (returnDate == null || returnDate.isBefore(departureDate)) {
-                throw new IllegalStateException("Return date is required and must be after departure date");
+                throw new IllegalArgumentException("Return date is required and must be after departure date");
             }
             if (adults.isEmpty()) {
-                throw new IllegalStateException("At least one adult is required");
+                throw new IllegalArgumentException("At least one adult is required");
             }
             return new Travel(
                 origin,
@@ -589,3 +589,127 @@ In the above diagram we model the solution with a single builder type and a dire
 ![Sequence Diagram of the Builder Pattern](images/builder-sequence-diagram.png)
 
 Please take partcular attention to the fact that it's the client code that creates the instance of the builder and provides it to the director. In fact, the director only orchestrates the building process, but it's the client code that decides which builder to use.
+
+## Drawbacks of the Buider Pattern
+
+Until know we saw which is the problem the pattern solves, the pattern structure and which are the pros of the pattern. However, there are also some cons. It's important to always give also the cons of a pattern, so that we can make a conscious choice when to use it.
+
+One of the main drawbacks of the Builder Pattern is that it can lead to a lot of boilerplate code. We have to create a new class for the builder, and we have to create a new method for each property of the object we want to build. This can make the code harder to read and maintain.
+
+Clearly, the pattern structure is functional to solve it's main problem, i.e. ease the creation of complex objects with mandatory and optional properties. However, the pattern can be overkill for simple objects. Remember, we need to create an additional class, the builder, with the same properties of the product. If applied blindly, it can make the code more complex than it needs to be.
+
+For example, let's take one of the types we defined in the example, the `Passenger` type. The `Passenger` type is a simple type with only a few properties. All the properties are mandatory but the `ancillaries` property. We can create a builder for the `Passenger` type, but it's not worth it. Let's see how the `Passenger` type would look like with a builder:
+
+```java
+public class Passenger {
+    private final String name;
+    private final LocalDateTime birthDate;
+    private final String passportNumber;
+    private final List<Ancillary> ancillaries;
+
+    private Passenger(
+        String name,
+        LocalDateTime birthDate,
+        String passportNumber,
+        List<Ancillary> ancillaries
+    ) {
+        this.name = name;
+        this.birthDate = birthDate;
+        this.passportNumber = passportNumber;
+        this.ancillaries = ancillaries;
+    }
+
+    public static class Builder {
+        private String name;
+        private LocalDateTime birthDate;
+        private String passportNumber;
+        private List<Ancillary> ancillaries = new ArrayList<>();
+
+        public Builder withName(String name) {
+            this.name = name;
+            return this;
+        }
+
+        public Builder withBirthDate(LocalDateTime birthDate) {
+            this.birthDate = birthDate;
+            return this;
+        }
+
+        public Builder withPassportNumber(String passportNumber) {
+            this.passportNumber = passportNumber;
+            return this;
+        }
+
+        public Builder withAncillary(Ancillary ancillary) {
+            this.ancillaries.add(ancillary);
+            return this;
+        }
+
+        public Passenger build() {
+
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("Name is required");
+            }
+
+            if (birthDate == null || birthDate.isAfter(LocalDateTime.now())) {
+                throw new IllegalArgumentException("Birth date is required and must be in the past");
+            }
+
+            if (passportNumber == null || passportNumber.isBlank()) {
+                throw new IllegalArgumentException("Passport number is required");
+            }
+
+            return new Passenger(
+                name,
+                birthDate,
+                passportNumber,
+                ancillaries
+            );
+        }
+    }
+}
+```
+
+Since we have only four properties, we can use directly the constructor of the `Passenger` class:
+
+```java
+public record Passenger(
+    String name,
+    LocalDateTime birthDate,
+    String passportNumber,
+    List<Ancillary> ancillaries) {
+
+    public Passenger {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Name is required");
+        }
+
+        if (birthDate == null || birthDate.isAfter(LocalDateTime.now())) {
+            throw new IllegalArgumentException("Birth date is required and must be in the past");
+        }
+
+        if (passportNumber == null || passportNumber.isBlank()) {
+            throw new IllegalArgumentException("Passport number is required");
+        }
+        // Gives a default value to the ancillaries property
+        if (ancillaries == null) {
+            ancillaries = List.of();
+        }
+    }
+}
+```
+
+The above solution achieve more or less the same result of the builder pattern, but with less code. So, be sure to use the builder pattern only when it's really needed.
+
+Another critic to the builder pattern is that it's not clear which properties are mandatory and which are optional. As we said, we can overcome this problem by adding mandatory properties to the builder constructor, losing a bit the fluent interface offered by the pattern. However, if we postpone the check of the mandatory properties to the `build` method, we move a check that with the constructor would be done at compile time to the runtime, which can lead to runtime exceptions in production, instead of compile-time errors during development.
+
+Let's try to use the builder we defined for the `Passenger` type:
+
+```java
+var johnDoe = new Passenger.Builder()
+    .withName("John Doe")
+    .withPassportNumber("123456789")
+    .build();
+```
+
+Until we run the code we don't know that we forgot to set the `birthDate` property. The code will compile, but it will throw an `IllegalArgumentException` at runtime. If we used the constructor, the code wouldn't compile, and we would have fixed the error before running the code. Some of you may argue that a test would have caught the error. However, our goal is to catch errors at compile time, not at runtime. Tests are written by humans (or worse, AIs) and can contain errors. The compiler is a machine and doesn't make mistakes.
