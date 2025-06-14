@@ -1,0 +1,578 @@
+---
+author: riccardo-cardin
+category: guide
+title: "Project Loom: Structured Concurrency in JDK 25 - What's New"
+excerpt: "Explore the latest evolution of structured concurrency in JDK 25 with JEP 505, featuring the new Joiner API, static factory methods, and enhanced configuration options"
+publishedDate: 2025-06-13
+tags: [java, loom, concurrency]
+---
+
+## Introduction
+
+The journey of structured concurrency in Java continues to evolve. After exploring the fundamentals in our previous article on [Project Loom: Structured Concurrency in Java](https://blog.rockthejvm.com/structured-concurrency-in-java/), we now dive into the significant improvements introduced in the next version of Java, JDK 25. With JEP 505, structured concurrency reaches its fifth preview, bringing substantial API changes that make concurrent programming even more intuitive and powerful.
+
+This article builds upon the concepts we covered previously, focusing on the key differences and new capabilities introduced in JDK 25. If you're new to structured concurrency, I recommend reading the foundational article first to understand the core concepts.
+
+## What's Changed in JDK 25
+
+JDK 25 introduces several fundamental changes to the structured concurrency API through JEP 505:
+
+1. **Static Factory Methods**: `StructuredTaskScope` is now created via static factory methods instead of public constructors
+2. **Joiner API**: A new, more flexible way to define completion policies
+3. **Enhanced Configuration**: Better support for timeouts, thread factories, and monitoring
+4. **Simplified Common Cases**: The zero-parameter `open()` method covers the most common use case
+5. **Type Safety Improvements**: Better generic type handling for task results
+
+Let's explore these changes by updating our GitHub user example from the previous article.
+
+## Setting up the project for JDK 25
+
+Since structured concurrency is still in preview in JDK 25, we need to enable preview features. Update your `pom.xml` to target JDK 25:
+
+```xml
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.12.1</version>
+            <configuration>
+                <source>25</source>
+                <target>25</target>
+                <compilerArgs>
+                    <arg>--enable-preview</arg>
+                </compilerArgs>
+            </configuration>
+        </plugin>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <version>3.2.5</version>
+            <configuration>
+                <argLine>--enable-preview</argLine>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
+```
+
+We'll continue using the same library for logging with an updated version compatible with JDK 25:
+
+```xml
+<dependency>
+    <groupId>ch.qos.logback</groupId>
+    <artifactId>logback-classic</artifactId>
+    <version>1.4.14</version>
+</dependency>
+<dependency>
+    <groupId>org.slf4j</groupId>
+    <artifactId>slf4j-api</artifactId>
+    <version>2.0.9</version>
+</dependency>
+```
+
+At the  time of writing, JDK 25 is still in early access, so make sure to download the latest build from the [OpenJDK website](https://jdk.java.net/25/) and set it up in your IDE. We'll use the build 25-ea+26-3358 for this article.
+
+## The New API: From Constructors to Factory Methods
+
+The most visible change in JDK 25 is how we create `StructuredTaskScope` instances. Instead of using constructors, we now use static factory methods.
+
+Before we dive into the new API, let's quickly recap the main example we used in the previous article: fetching a GitHub user and their repositories concurrently.
+
+First, let's revisit our data structures:
+
+```java
+record GitHubUser(User user, List<Repository> repositories) {}
+
+record User(UserId userId, UserName name, Email email) {}
+
+record UserId(long value) {}
+
+record UserName(String value) {}
+
+record Email(String value) {}
+
+record Repository(String name, Visibility visibility, URI uri) {}
+
+enum Visibility {
+    PUBLIC,
+    PRIVATE
+}
+```
+
+We also define a logger to help us track the flow of our application:
+
+```java
+private static final Logger LOGGER = LoggerFactory.getLogger(Main.class);
+```
+
+Next, we have our interfaces for fetching user and repository data:
+
+```java
+interface FindUserByIdPort {
+  User findUser(UserId userId) throws InterruptedException;
+}
+
+
+interface FindRepositoriesByUserIdPort {
+  List<Repository> findRepositories(UserId userId) throws InterruptedException;
+}
+```
+
+The last piece of the puzzle is the `delay` method, which simulates a delay in the task execution:
+
+```java
+void delay(Duration duration) throws InterruptedException {
+  Thread.sleep(duration);
+}
+```
+
+With all the pieces in place, we can give a fake  implementation of the `FindUserByIdPort` and `FindRepositoriesByUserIdPort` interfaces to simulate fetching data:
+
+```java
+class GitHubRepository implements FindUserByIdPort, FindRepositoriesByUserIdPort {
+  @Override
+  public User findUser(UserId userId) throws InterruptedException {
+    LOGGER.info("Finding user with id '{}'", userId);
+    delay(Duration.ofMillis(500L));
+    LOGGER.info("User '{}' found", userId);
+    return new User(userId, new UserName("rcardin"), new Email("rcardin@rockthejvm.com"));
+  }
+  @Override
+  public List<Repository> findRepositories(UserId userId) throws InterruptedException {
+    LOGGER.info("Finding repositories for user with id '{}'", userId);
+    delay(Duration.ofSeconds(1L));
+    LOGGER.info("Repositories found for user '{}'", userId);
+    return List.of(
+        new Repository(
+            "raise4s", Visibility.PUBLIC, URI.create("https://github.com/rcardin/raise4s")),
+        new Repository(
+            "sus4s", Visibility.PUBLIC, URI.create("https://github.com/rcardin/sus4s")));
+  }
+}
+```
+
+Now that  we have our data structures and interfaces set up, let's look at how the API of the structured concurrency has changed in JDK 25.
+
+### The Old Way (Java 21/23)
+
+```java
+// This no longer works in JDK 25
+try (var scope = new StructuredTaskScope<>()) {
+    // ...
+}
+
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    // ...
+}
+```
+
+### The New Way (JDK 25)
+
+```java
+// The new approach with static factory methods
+try (var scope = StructuredTaskScope.open()) {
+    // Default policy: fail if any subtask fails
+}
+
+try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
+    // Custom policy using Joiners
+}
+```
+
+Let's update our GitHub user service to use the new API. First, let's revisit our data structures:
+
+```java
+record GitHubUser(User user, List<Repository> repositories) {}
+
+record User(UserId userId, UserName name, Email email) {}
+
+record UserId(long value) {}
+
+record UserName(String value) {}
+
+record Email(String value) {}
+
+record Repository(String name, Visibility visibility, URI uri) {}
+
+enum Visibility {
+    PUBLIC,
+    PRIVATE
+}
+```
+
+The interfaces remain the same:
+
+```java
+interface FindUserByIdPort {
+  User findUser(UserId userId) throws InterruptedException;
+}
+
+interface FindRepositoriesByUserIdPort {
+  List<Repository> findRepositories(UserId userId) throws InterruptedException;
+}
+```
+
+## The Default Policy: Zero-Parameter open()
+
+The most common use case in structured concurrency is "succeed if all subtasks succeed, fail if any subtask fails." JDK 25 makes this the default behavior of the zero-parameter `open()` method:
+
+```java
+class FindGitHubUserService implements FindGitHubUserUseCase {
+
+  private final FindUserByIdPort findUserByIdPort;
+  private final FindRepositoriesByUserIdPort findRepositoriesByUserIdPort;
+
+  public FindGitHubUserService(
+      FindUserByIdPort findUserByIdPort,
+      FindRepositoriesByUserIdPort findRepositoriesByUserIdPort) {
+    this.findUserByIdPort = findUserByIdPort;
+    this.findRepositoriesByUserIdPort = findRepositoriesByUserIdPort;
+  }
+
+  @Override
+  public GitHubUser findGitHubUser(UserId userId) throws InterruptedException {
+    try (var scope = StructuredTaskScope.open()) {
+      var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
+      var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
+
+      scope.join(); // Waits for all subtasks to complete or any to fail
+
+      // Both tasks succeeded, so we can safely get their results
+      return new GitHubUser(userTask.get(), repositoriesTask.get());
+    }
+  }
+}
+```
+
+This approach is cleaner than the previous `StructuredTaskScope.ShutdownOnFailure` class. The `join()` method will throw a `FailedException` if any subtask fails, and the scope will automatically cancel remaining subtasks.
+
+## Introduction to Joiners
+
+The real power of JDK 25's structured concurrency lies in the new `Joiner` API. Joiners define how the scope should handle subtask completion and what the `join()` method should return.
+
+### Built-in Joiners
+
+JDK 25 provides several built-in joiners for common patterns:
+
+#### 1. allSuccessfulOrThrow()
+
+This joiner waits for all subtasks to succeed and returns a stream of all subtasks:
+
+```java
+public List<Repository> findAllRepositoriesFromMultipleSources(UserId userId) throws InterruptedException {
+    List<FindRepositoriesByUserIdPort> sources = getRepositorySources();
+
+    try (var scope = StructuredTaskScope.open(Joiner.allSuccessfulOrThrow())) {
+        // Fork a task for each source
+        sources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
+
+        // Get all results and flatten them
+        return scope.join()
+                    .map(Subtask::get)
+                    .flatMap(List::stream)
+                    .distinct()
+                    .toList();
+    }
+}
+```
+
+#### 2. anySuccessfulResultOrThrow()
+
+This joiner implements a "race" pattern - it returns the result of the first subtask that succeeds:
+
+```java
+public List<Repository> findRepositoriesWithFallback(UserId userId) throws InterruptedException {
+    try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
+        // Try cache first
+        scope.fork(() -> cacheService.findRepositories(userId));
+        // Fallback to API
+        scope.fork(() -> apiService.findRepositories(userId));
+
+        // Returns the result of whichever completes successfully first
+        return scope.join();
+    }
+}
+```
+
+#### 3. awaitAll()
+
+This joiner waits for all subtasks to complete, regardless of success or failure:
+
+```java
+public void performCleanupTasks(UserId userId) throws InterruptedException {
+    try (var scope = StructuredTaskScope.open(Joiner.awaitAll())) {
+        scope.fork(() -> cacheService.invalidateUser(userId));
+        scope.fork(() -> logService.logUserAccess(userId));
+        scope.fork(() -> analyticsService.trackUserActivity(userId));
+
+        scope.join(); // Waits for all to complete
+
+        // Process individual results as needed
+        // All subtasks are guaranteed to be complete
+    }
+}
+```
+
+## Custom Joiners: Advanced Policies
+
+The real power comes from implementing custom joiners. Let's create a joiner that collects successful results while ignoring failures:
+
+```java
+public class CollectSuccessfulJoiner<T> implements StructuredTaskScope.Joiner<T, List<T>> {
+    private final List<T> results = Collections.synchronizedList(new ArrayList<>());
+    private volatile boolean cancelled = false;
+
+    @Override
+    public boolean onComplete(StructuredTaskScope.Subtask<? extends T> subtask) {
+        if (subtask.state() == StructuredTaskScope.Subtask.State.SUCCESS) {
+            results.add(subtask.get());
+        }
+        // Never cancel - we want to collect all successful results
+        return false;
+    }
+
+    @Override
+    public List<T> result() throws Throwable {
+        return new ArrayList<>(results);
+    }
+}
+```
+
+Using this custom joiner:
+
+```java
+public List<Repository> findRepositoriesFromAllAvailableSources(UserId userId) throws InterruptedException {
+    List<FindRepositoriesByUserIdPort> sources = getAllRepositorySources();
+
+    try (var scope = StructuredTaskScope.open(new CollectSuccessfulJoiner<List<Repository>>())) {
+        // Fork tasks for all sources - some might fail
+        sources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
+
+        // Get all successful results, ignoring failures
+        return scope.join()
+                    .stream()
+                    .flatMap(List::stream)
+                    .distinct()
+                    .toList();
+    }
+}
+```
+
+## Enhanced Configuration
+
+JDK 25 introduces powerful configuration options through the `Config` API:
+
+### Setting Timeouts
+
+```java
+public GitHubUser findGitHubUserWithTimeout(UserId userId, Duration timeout)
+    throws InterruptedException {
+
+    try (var scope = StructuredTaskScope.open(
+            Joiner.allSuccessfulOrThrow(),
+            config -> config.withTimeout(timeout))) {
+
+        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
+        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
+
+        scope.join(); // Will throw TimeoutException if timeout expires
+
+        return new GitHubUser(
+            userTask.get(),
+            repositoriesTask.get().map(Subtask::get).toList().get(0) // Example extraction
+        );
+    }
+}
+```
+
+### Custom Thread Factory
+
+```java
+public GitHubUser findGitHubUserWithCustomThreads(UserId userId) throws InterruptedException {
+    ThreadFactory customFactory = Thread.ofVirtual()
+        .name("github-worker-", 0)
+        .factory();
+
+    try (var scope = StructuredTaskScope.open(
+            Joiner.allSuccessfulOrThrow(),
+            config -> config.withThreadFactory(customFactory)
+                           .withName("github-user-scope"))) {
+
+        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
+        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
+
+        scope.join();
+
+        return new GitHubUser(userTask.get(), repositoriesTask.get());
+    }
+}
+```
+
+## Practical Example: Building a Resilient Service
+
+Let's create a comprehensive example that showcases the new capabilities:
+
+```java
+public class ResilientGitHubService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ResilientGitHubService.class);
+
+    private final List<FindUserByIdPort> userSources;
+    private final List<FindRepositoriesByUserIdPort> repositorySources;
+    private final Duration defaultTimeout = Duration.ofSeconds(5);
+
+    public GitHubUser findGitHubUserResilient(UserId userId) throws InterruptedException {
+        try (var scope = StructuredTaskScope.open(
+                Joiner.allSuccessfulOrThrow(),
+                config -> config.withTimeout(defaultTimeout)
+                               .withName("resilient-github-lookup"))) {
+
+            // Find user with fallback sources
+            var userTask = scope.fork(() -> findUserWithFallback(userId));
+
+            // Find repositories with multiple sources
+            var repositoriesTask = scope.fork(() -> findRepositoriesResilient(userId));
+
+            scope.join();
+
+            return new GitHubUser(userTask.get(), repositoriesTask.get());
+        }
+    }
+
+    private User findUserWithFallback(UserId userId) throws InterruptedException {
+        try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
+            // Try all user sources, return first successful result
+            userSources.forEach(source -> scope.fork(() -> source.findUser(userId)));
+            return scope.join();
+        }
+    }
+
+    private List<Repository> findRepositoriesResilient(UserId userId) throws InterruptedException {
+        try (var scope = StructuredTaskScope.open(new CollectSuccessfulJoiner<List<Repository>>())) {
+            // Try all repository sources, collect all successful results
+            repositorySources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
+
+            return scope.join()
+                        .stream()
+                        .flatMap(List::stream)
+                        .distinct()
+                        .toList();
+        }
+    }
+}
+```
+
+## Exception Handling in JDK 25
+
+Exception handling becomes more straightforward with the new API:
+
+```java
+public GitHubUser findGitHubUserWithErrorHandling(UserId userId) {
+    try (var scope = StructuredTaskScope.open()) {
+        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
+        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
+
+        scope.join();
+
+        return new GitHubUser(userTask.get(), repositoriesTask.get());
+
+    } catch (StructuredTaskScope.FailedException e) {
+        // Handle failures from subtasks
+        Throwable cause = e.getCause();
+        LOGGER.error("Failed to fetch GitHub user data", cause);
+
+        return switch (cause) {
+            case UserNotFoundException unf -> throw new IllegalArgumentException("User not found: " + userId);
+            case NetworkException ne -> throw new ServiceUnavailableException("Network error", ne);
+            default -> throw new RuntimeException("Unexpected error", cause);
+        };
+
+    } catch (StructuredTaskScope.TimeoutException e) {
+        LOGGER.warn("Request timed out for user: {}", userId);
+        throw new RequestTimeoutException("Request timed out");
+
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException("Request was interrupted", e);
+    }
+}
+```
+
+## Migration Guide from Java 21/23 to JDK 25
+
+If you're migrating from the previous structured concurrency API, here's a quick reference:
+
+### Basic Scope Creation
+```java
+// Old (Java 21/23)
+try (var scope = new StructuredTaskScope<>()) { }
+
+// New (JDK 25)
+try (var scope = StructuredTaskScope.open()) { }
+```
+
+### Shutdown on Failure Policy
+```java
+// Old
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    // ...
+    scope.join().throwIfFailed();
+}
+
+// New
+try (var scope = StructuredTaskScope.open()) {
+    // ...
+    scope.join(); // Automatically throws FailedException on failure
+}
+```
+
+### Shutdown on Success Policy
+```java
+// Old
+try (var scope = new StructuredTaskScope.ShutdownOnSuccess<String>()) {
+    // ...
+    return scope.join().result();
+}
+
+// New
+try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
+    // ...
+    return scope.join();
+}
+```
+
+## Observability Improvements
+
+JDK 25 enhances observability with better thread dump support. The hierarchical structure of scopes is now clearly visible in JSON thread dumps:
+
+```bash
+jcmd <pid> Thread.dump_to_file -format=json thread_dump.json
+```
+
+This will show the structured relationship between parent and child tasks, making debugging concurrent applications much easier.
+
+## Performance Considerations
+
+The new API brings several performance benefits:
+
+1. **Reduced Object Allocation**: Static factory methods reduce the overhead of scope creation
+2. **Better Memory Management**: Joiners can be optimized for specific use cases
+3. **Enhanced Virtual Thread Integration**: Better integration with virtual threads' lifecycle management
+
+## Best Practices for JDK 25 Structured Concurrency
+
+1. **Use the Default Policy When Possible**: The zero-parameter `open()` method covers most use cases
+2. **Leverage Built-in Joiners**: Before creating custom joiners, check if built-in ones meet your needs
+3. **Configure Timeouts**: Always set reasonable timeouts for external operations
+4. **Handle Interruption Properly**: Ensure your subtasks respond to interruption
+5. **Use Descriptive Names**: Set meaningful names for scopes to improve observability
+
+## Conclusion
+
+JDK 25's structured concurrency represents a significant evolution from the previous versions. The new `Joiner` API provides unprecedented flexibility while maintaining the simplicity that makes structured concurrency so appealing. The static factory methods and enhanced configuration options make the API more intuitive and powerful.
+
+The journey from unstructured concurrency with `ExecutorService` to the elegant structured concurrency of JDK 25 shows how Java continues to evolve to meet the needs of modern concurrent programming. Virtual threads provide the scalability, and structured concurrency provides the safety and clarity we need to build robust, maintainable applications.
+
+As structured concurrency moves towards finalization in future Java releases, now is the perfect time to start experimenting with these new APIs and integrating them into your applications. The combination of virtual threads and structured concurrency represents the future of concurrent programming in Java, offering both performance and maintainability that traditional approaches simply cannot match.
+
+The concepts we've explored here - from basic scope creation to custom joiners and resilient service patterns - provide a solid foundation for building the next generation of concurrent Java applications. As you adopt these patterns, you'll find that concurrent programming becomes not just more performant, but also more enjoyable and less error-prone.
