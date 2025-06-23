@@ -127,7 +127,7 @@ void delay(Duration duration) throws InterruptedException {
 }
 ```
 
-With all the pieces in place, we can give a fake  implementation of the `FindUserByIdPort` and `FindRepositoriesByUserIdPort` interfaces to simulate fetching data:
+With all the pieces in place, we can give a fake implementation of the `FindUserByIdPort` and `FindRepositoriesByUserIdPort` interfaces to simulate fetching data:
 
 ```java
 class GitHubRepository implements FindUserByIdPort, FindRepositoriesByUserIdPort {
@@ -152,7 +152,51 @@ class GitHubRepository implements FindUserByIdPort, FindRepositoriesByUserIdPort
 }
 ```
 
-Now that  we have our data structures and interfaces set up, let's look at how the API of the structured concurrency has changed in JDK 25.
+We compose the `FindUserByIdPort` and `FindRepositoriesByUserIdPort` into a service that fetches a GitHub user and their repositories concurrently, as we did in the previous article:
+
+```java
+interface FindGitHubUserUseCase {
+  GitHubUser findGitHubUser(UserId userId)
+}
+```
+
+The best way to understand the changes in JDK 25 is to look at how we create and use `StructuredTaskScope` instances. In previous versions, we used constructors to create scopes, but JDK 25 introduces static factory methods that simplify the API and make it more intuitive. Let's do it step by step.
+
+First, let's create the structured scope that will contain our tasks. In JDK 25, we use the `StructuredTaskScope.open()` method to create a new scope:
+
+```java
+class FindGitHubUserService implements FindGitHubUserUseCase {
+  private final FindUserByIdPort findUserByIdPort;
+  private final FindRepositoriesByUserIdPort findRepositoriesByUserIdPort;
+
+  public FindGitHubUserService(
+      FindUserByIdPort findUserByIdPort,
+      FindRepositoriesByUserIdPort findRepositoriesByUserIdPort) {
+    this.findUserByIdPort = findUserByIdPort;
+    this.findRepositoriesByUserIdPort = findRepositoriesByUserIdPort;
+  }
+
+  @Override
+  public GitHubUser findGitHubUser(UserId userId) {
+    try (var scope = StructuredTaskScope.open()) {
+      // TODO
+      return null;
+    }
+  }
+}
+```
+
+Since it's the first time we introduced the new class `FindGitHubUserUseCase`, we shared also the boilerplate code for the data structures and interfaces. We'll omit it in the following sections to focus on the changes introduced in JDK 25.
+
+Do you think the introduction of a static factory method is just a cosmetic change? Not at all! In fact, the returned `StructuredTaskScope` instance is quite different from the previous versions:
+
+```java
+public sealed interface StructuredTaskScope<T, R> extends AutoCloseable
+```
+
+First, the `StructuredTaskScope` bacame an interface instead of a class. But, it's more than just an interface; it's a **sealed interface**. This means that we cannot implement it directly in user site code, as we did in previous versions. We'll return in a moment to this point.
+
+If you remember, the previous version of `StructuredTaskScope` was generic only on the type variable `T`, which represented the type of the result returned by the `join()` method. In JDK 25, the `StructuredTaskScope` interface is now generic on two type variables: `T` and `R`. The `R` type variable now represents the type of the result returned by the `join()` method, and the `T` type variable represents the type of the subtasks that are forked within the scope.
 
 ### The Old Way (Java 21/23)
 
