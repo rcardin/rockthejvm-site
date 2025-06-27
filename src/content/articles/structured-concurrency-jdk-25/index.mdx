@@ -316,8 +316,69 @@ As expected, the `join()` method throws a `StructuredTaskScope.FailedException`,
 If you remember, in the previous versions, when using the the `StructuredTaskScope.ShutdownOnFailure` class, we had to call also the `throwIfFailed()` method in chain to the `join()` method. In JDK 25, the designers reviewed the API opting for an homogeneous approach among the different concurrency policies. In this way, we lost the possibility to remap the exception thrown by the `join()` method, which was possible in previous versions since the `throwIfFailed()` could had taken a mapping function as parameter. However, in the previous article, we warned about remapping the original exception thrown by the failing subtask, since it was a `Throwable` that potentially could have been an `Error`.
 
 
+The second joiner we see is a slightly different version of the previous one, called `AllSuccessful<T>`:
 
+```java
+// JDK 25 Code Snippet
+static final class AllSuccessful<T> implements Joiner<T, Stream<Subtask<T>>>
+```
 
+The class signature should tell you quite soundly what it does: it waits for all subtasks to complete successfully, and returns a stream of all subtasks. If any subtask fails, it throws a `StructuredTaskScope.FailedException` and cancel any left subtask. All subtasks must returns a value of type `T` or a subtype of it.
+
+We can create an instance of this joiner by calling the static factory method `Joiner.allSuccessfulOrThrow()`. So, let's make an example. Let's say we want to fetch concurrently a list of users:
+
+```java
+interface FindGitHubUsersUseCase {
+  List<GitHubUser> findGitHubUsers(List<UserId> userIds) throws InterruptedException;
+}
+```
+
+The service implementing this use case can be defined as follows:
+
+```java
+class FindGitHubUsersService implements FindGitHubUsersUseCase {
+
+  private final FindGitHubUserUseCase findGitHubUser;
+
+  FindGitHubUsersService(FindGitHubUserUseCase findGitHubUser) {
+    this.findGitHubUser = findGitHubUser;
+  }
+
+  @Override
+  public List<GitHubUser> findGitHubUsers(List<UserId> userIds) throws InterruptedException {
+    try (var scope = StructuredTaskScope.open(Joiner.<GitHubUser>allSuccessfulOrThrow())) {
+      userIds.forEach(userId -> scope.fork(() -> findGitHubUser.findGitHubUser(userId)));
+      return scope.join().map(StructuredTaskScope.Subtask::get).toList();
+    }
+  }
+}
+```
+
+Since we're not unsing the default joiner, we need to pass it explicitly to the `StructuredTaskScope.open()` method. We can now use our newly shiny service to fetch a list of GitHub users:
+
+```java
+void main() throws InterruptedException {
+  var gitHubRepository = new GitHubRepository();
+  var findGitHubUserService = new FindGitHubUserService(gitHubRepository, gitHubRepository);
+  var findGitHubUsersService = new FindGitHubUsersService(findGitHubUserService);
+  findGitHubUsersService.findGitHubUsers(List.of(new UserId(1L), new UserId(2L)));
+}
+```
+
+When we run the `main` method, we should see the following output:
+
+```
+18:12:29.596 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+18:12:29.596 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=2]'
+18:12:29.596 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=2]'
+18:12:29.596 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
+18:12:30.108 [] INFO  in.rcard.sc.Main - User 'UserId[value=2]' found
+18:12:30.109 [] INFO  in.rcard.sc.Main - User 'UserId[value=1]' found
+18:12:30.608 [] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=2]'
+18:12:30.608 [] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
+```
+
+As we can see, the executions of the two subtasks are interleaved, and the results are returned as a list of `GitHubUser` instances.
 
 
 
