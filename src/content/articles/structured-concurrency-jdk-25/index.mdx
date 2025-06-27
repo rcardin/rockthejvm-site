@@ -191,109 +191,204 @@ Since it's the first time we introduced the new class `FindGitHubUserUseCase`, w
 Do you think the introduction of a static factory method is just a cosmetic change? Not at all! In fact, the returned `StructuredTaskScope` instance is quite different from the previous versions:
 
 ```java
+// JDK 25 Code Snippet
 public sealed interface StructuredTaskScope<T, R> extends AutoCloseable
 ```
 
 First, the `StructuredTaskScope` bacame an interface instead of a class. But, it's more than just an interface; it's a **sealed interface**. This means that we cannot implement it directly in user site code, as we did in previous versions. We'll return in a moment to this point.
 
-If you remember, the previous version of `StructuredTaskScope` was generic only on the type variable `T`, which represented the type of the result returned by the `join()` method. In JDK 25, the `StructuredTaskScope` interface is now generic on two type variables: `T` and `R`. The `R` type variable now represents the type of the result returned by the `join()` method, and the `T` type variable represents the type of the subtasks that are forked within the scope.
+If you remember, the previous version of `StructuredTaskScope` was generic only on the type variable `T`, which represented the type of the result returned by the `join()` method. In JDK 25, the `StructuredTaskScope` interface is now generic on two type variables: `T` and `R`. The `R` type variable represents the type of the result returned by the `join()` method, and the `T` type variable represents the return type of the subtasks that are forked within the scope.
 
-### The Old Way (Java 21/23)
+The `open()` method without parameters is particular, since it's defined as follows
 
 ```java
-// This no longer works in JDK 25
-try (var scope = new StructuredTaskScope<>()) {
-    // ...
-}
-
-try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    // ...
+// JDK 25 Code Snippet
+static <T> StructuredTaskScope<T, Void> open() {
+    return open(Joiner.awaitAllSuccessfulOrThrow(), Function.identity());
 }
 ```
 
-### The New Way (JDK 25)
+We can notice two things. The first, the `R` type variable is bound to `Void`, which means that the `join()` method will not return any value. The only accepted value for `Void` is `null`. The `Void` return type of the joining operation derives from the default joining policy configured by the method, which is the `Joiner.awaitAllSuccessfulOrThrow()`. As we'll see later, instead of explicitly creating the joining policy using a dedicated scope, we'll use the `Joiner` type.
+
+The `Joiner.awaitAllSuccessfulOrThrow()` factory method creates a joining policy comparable to the old `StructuredTaskScope.ShutdownOnFailure` class, which was used to define the default behavior of the scope: "succeed if all subtasks succeed, fail if any subtask fails." This is the most common use case in structured concurrency. In such a policy, the `join()` method always returns `null` if all subtasks succeed.
+
+Now, we need to create the subtasks. Nothing changes here; we can still use the `fork()` method to create subtasks within the scope.
 
 ```java
-// The new approach with static factory methods
 try (var scope = StructuredTaskScope.open()) {
-    // Default policy: fail if any subtask fails
-}
+  var user = scope.fork(() -> findUserByIdPort.findUser(userId));
+  var repositories = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
 
-try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
-    // Custom policy using Joiners
-}
-```
-
-Let's update our GitHub user service to use the new API. First, let's revisit our data structures:
-
-```java
-record GitHubUser(User user, List<Repository> repositories) {}
-
-record User(UserId userId, UserName name, Email email) {}
-
-record UserId(long value) {}
-
-record UserName(String value) {}
-
-record Email(String value) {}
-
-record Repository(String name, Visibility visibility, URI uri) {}
-
-enum Visibility {
-    PUBLIC,
-    PRIVATE
+  return null;
 }
 ```
 
-The interfaces remain the same:
+After forking the subtasks, we need to wait for them to complete. In JDK 25, as in the previous installments, we can use the `join()` method to wait for all subtasks to complete or any to fail:
 
 ```java
-interface FindUserByIdPort {
-  User findUser(UserId userId) throws InterruptedException;
-}
+try (var scope = StructuredTaskScope.open()) {
+  var user = scope.fork(() -> findUserByIdPort.findUser(userId));
+  var repositories = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
 
-interface FindRepositoriesByUserIdPort {
-  List<Repository> findRepositories(UserId userId) throws InterruptedException;
+  scope.join();
+
+  return null;
 }
 ```
 
-## The Default Policy: Zero-Parameter open()
-
-The most common use case in structured concurrency is "succeed if all subtasks succeed, fail if any subtask fails." JDK 25 makes this the default behavior of the zero-parameter `open()` method:
+Last but not least, we need to retrieve the results of the subtasks, calling the `get()` method on the `Subtask` instances returned by the `fork()` method:
 
 ```java
-class FindGitHubUserService implements FindGitHubUserUseCase {
+try (var scope = StructuredTaskScope.open()) {
+  var user = scope.fork(() -> findUserByIdPort.findUser(userId));
+  var repositories = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
 
-  private final FindUserByIdPort findUserByIdPort;
-  private final FindRepositoriesByUserIdPort findRepositoriesByUserIdPort;
+  scope.join();
 
-  public FindGitHubUserService(
-      FindUserByIdPort findUserByIdPort,
-      FindRepositoriesByUserIdPort findRepositoriesByUserIdPort) {
-    this.findUserByIdPort = findUserByIdPort;
-    this.findRepositoriesByUserIdPort = findRepositoriesByUserIdPort;
-  }
+  return new GitHubUser(user.get(), repositories.get());;
+}
+```
 
-  @Override
-  public GitHubUser findGitHubUser(UserId userId) throws InterruptedException {
-    try (var scope = StructuredTaskScope.open()) {
-      var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
-      var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
+Again, nothing changes here, apparently. The only difference is the type of the exception thrown by the `join()` method. In JDK 25, if any subtask fails, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. If you remember, in the previous versions, the `join()` method threw a `java.util.concurrent.ExecutionException`.
 
-      scope.join(); // Waits for all subtasks to complete or any to fail
+Now, that we saw the basic usage of the new API, let's explore the key differences in the concurrency policies introduced in JDK 25.
 
-      // Both tasks succeeded, so we can safely get their results
-      return new GitHubUser(userTask.get(), repositoriesTask.get());
+## Meet Your New Best Friend: The `Joiner` API
+
+As we saw, the `StructuredTaskScope` in JDK 25 is a sealed interface, which means we cannot implement it directly. Moreover, the interface has only one implementation, which doesn't implement any concurrency policy. In previous versions, we had different implementations of `StructuredTaskScope` that defined different concurrency policies, such as `ShutdownOnFailure`, `ShutdownOnSuccess`, and so on. How are concurrency policies defined in JDK 25, then?
+
+In JDK 25, concurrency policies are defined through a new API called `Joiner`. The `Joiner` API allows us to define how the results of subtasks are combined and how failures are handled.
+
+The JDK offers a set of built-in joiners that cover the most common use cases, and are available as static factory methods on the `Joiner` interface. Let's take a look at how we can use these joiners to define the behavior of our structured task scope.
+
+The first `Joiner` we see is the `Joiner.AwaitSuccessful<T>`. It's the default joiner used by the `StructuredTaskScope.open()` method without parameters. It waits for all subtasks to complete successfully, and if any subtask fails, it throws a `StructuredTaskScope.FailedException`. We can create an instance of such a joiner by calling the static factory method `Joiner.awaitAllSuccessfulOrThrow()`:
+
+```java
+// JDK 25 Code Snippet
+static <T> Joiner<T, Void> awaitAllSuccessfulOrThrow() {
+    return new Joiners.AwaitSuccessful<>();
+}
+```
+
+The `AwaitSuccessful<T>` joiner is the counterpart of the `ShutdownOnFailure` class we used in previous versions.
+
+As we saw earlier, the return type `R` of the `Joiner` is bound to `Void`, which means that the `join()` method will return `null` if all subtasks succeed. If any subtask fails, the `join()` method will throw a `StructuredTaskScope.FailedException`.
+
+To see it in action in case of a failure in one of the subtasks, let's modify our `GitHubRepository.findUser` method to simulate a failure:
+
+```java
+@Override
+public User findUser(UserId userId) throws InterruptedException {
+  LOGGER.info("Finding user with id '{}'", userId);
+  delay(Duration.ofMillis(500L));
+  throw new RuntimeException("Error finding user with id '%s'".formatted(userId));
+}
+```
+
+Let's wire all the pieces together in the `main` method:
+
+```java
+void main() throws InterruptedException {
+  var gitHubRepository = new GitHubRepository();
+  var findGitHubUserService = new FindGitHubUserService(gitHubRepository, gitHubRepository);
+  findGitHubUserService.findGitHubUser(new UserId(1L));
+}
+```
+
+When we run the `main` method, we should see the following output:
+
+```
+14:52:27.097 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
+14:52:27.097 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+Exception in thread "main" java.util.concurrent.StructuredTaskScope$FailedException: java.lang.RuntimeException: Error finding user with id 'UserId[value=1]'
+	at java.base/java.util.concurrent.StructuredTaskScopeImpl.join(StructuredTaskScopeImpl.java:258)
+	at in.rcard.sc.Main$FindGitHubUserService.findGitHubUser(Main.java:89)
+	at in.rcard.sc.Main.main(Main.java:101)
+Caused by: java.lang.RuntimeException: Error finding user with id 'UserId[value=1]'
+	at in.rcard.sc.Main$GitHubRepository.findUser(Main.java:48)
+	at in.rcard.sc.Main$FindGitHubUserService.lambda$findGitHubUser$0(Main.java:86)
+	at java.base/java.util.concurrent.StructuredTaskScopeImpl$SubtaskImpl.run(StructuredTaskScopeImpl.java:325)
+	at java.base/java.lang.VirtualThread.run(VirtualThread.java:456)
+```
+
+As expected, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. Moreover, the `repositories` forked subtask is cancelled, as the concurrency policy promised.
+
+If you remember, in the previous versions, when using the the `StructuredTaskScope.ShutdownOnFailure` class, we had to call also the `throwIfFailed()` method in chain to the `join()` method. In JDK 25, the designers reviewed the API opting for an homogeneous approach among the different concurrency policies. In this way, we lost the possibility to remap the exception thrown by the `join()` method, which was possible in previous versions since the `throwIfFailed()` could had taken a mapping function as parameter. However, in the previous article, we warned about remapping the original exception thrown by the failing subtask, since it was a `Throwable` that potentially could have been an `Error`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+The `Joiner` interface is a functional interface that defines a single method purely abstract method:
+
+```java
+// JDK 25 Code Snippet
+public interface Joiner<T, R> {
+    R result() throws Throwable;
+}
+```
+
+As you might guess, the `join()` internally invokes the the `result()` method of the `Joiner` instance to retrieve the final result of the scope.
+
+```java
+// JDK 25 Code Snippet
+@Override
+public R join() throws InterruptedException {
+    // A lot of code here...
+    try {
+        return joiner.result();
+    } catch (Throwable e) {
+        throw new FailedException(e);
     }
-  }
 }
 ```
 
-This approach is cleaner than the previous `StructuredTaskScope.ShutdownOnFailure` class. The `join()` method will throw a `FailedException` if any subtask fails, and the scope will automatically cancel remaining subtasks.
+The `Joiner` interface is generic also on `T` other than `R`. The `T` type variable represents the type of the subtasks, as we saw earlier. The `Joiner` uses the type variable `T` the remaining methods it exposes:
 
-## Introduction to Joiners
+```java
+// JDK 25 Code Snippet
+default boolean onFork(Subtask<? extends T> subtask) {
+    if (subtask.state() != Subtask.State.UNAVAILABLE) {
+        throw new IllegalArgumentException("Subtask not in UNAVAILABLE state");
+    }
+    return false;
+}
 
-The real power of JDK 25's structured concurrency lies in the new `Joiner` API. Joiners define how the scope should handle subtask completion and what the `join()` method should return.
+default boolean onComplete(Subtask<? extends T> subtask) {
+    if (subtask.state() == Subtask.State.UNAVAILABLE) {
+        throw new IllegalArgumentException("Subtask has not completed");
+    }
+    return false;
+}
+```
+
+As the names suggest, the `onFork()` method is called when a subtask is forked, and the `onComplete()` method is called when a subtask completes. Both methods return a boolean value that indicates whether the outer scope should be cancelled or not. Be careful, though: the `onComplete` method is not called if the subtask completes after the outer scope has been cancelled.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### Built-in Joiners
 
