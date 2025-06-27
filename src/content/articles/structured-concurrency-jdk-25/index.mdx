@@ -62,7 +62,7 @@ We'll continue using the same library for logging with an updated version compat
 <dependency>
     <groupId>ch.qos.logback</groupId>
     <artifactId>logback-classic</artifactId>
-    <version>1.4.14</version>
+    <version>1.5.13</version>
 </dependency>
 <dependency>
     <groupId>org.slf4j</groupId>
@@ -298,8 +298,8 @@ void main() throws InterruptedException {
 When we run the `main` method, we should see the following output:
 
 ```
-14:52:27.097 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
-14:52:27.097 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+14:52:27.097 [virtual-12] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
+14:52:27.097 [virtual-12] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
 Exception in thread "main" java.util.concurrent.StructuredTaskScope$FailedException: java.lang.RuntimeException: Error finding user with id 'UserId[value=1]'
 	at java.base/java.util.concurrent.StructuredTaskScopeImpl.join(StructuredTaskScopeImpl.java:258)
 	at in.rcard.sc.Main$FindGitHubUserService.findGitHubUser(Main.java:89)
@@ -368,17 +368,17 @@ void main() throws InterruptedException {
 When we run the `main` method, we should see the following output:
 
 ```
-18:12:29.596 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
-18:12:29.596 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=2]'
-18:12:29.596 [] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=2]'
-18:12:29.596 [] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
-18:12:30.108 [] INFO  in.rcard.sc.Main - User 'UserId[value=2]' found
-18:12:30.109 [] INFO  in.rcard.sc.Main - User 'UserId[value=1]' found
-18:12:30.608 [] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=2]'
-18:12:30.608 [] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
+18:18:29.406 [virtual-29] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=2]'
+18:18:29.406 [virtual-33] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=2]'
+18:18:29.406 [virtual-30] INFO  in.rcard.sc.Main - Finding user with id 'UserId[value=1]'
+18:18:29.406 [virtual-34] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+18:18:29.919 [virtual-29] INFO  in.rcard.sc.Main - User 'UserId[value=2]' found
+18:18:29.919 [virtual-30] INFO  in.rcard.sc.Main - User 'UserId[value=1]' found
+18:18:30.422 [virtual-33] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=2]'
+18:18:30.422 [virtual-34] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
 ```
 
-As we can see, the executions of the two subtasks are interleaved, and the results are returned as a list of `GitHubUser` instances.
+As we can see, the executions of the two subtasks are interleaved, and the results are returned as a list of `GitHubUser` instances. It's very interesting also to look at the list of virtual threads that are executing the subtasks.
 
 
 
