@@ -386,7 +386,7 @@ The next joiner we see is the `AnySuccessful<T>` joiner:
 static final class AnySuccessful<T> implements Joiner<T, T>
 ```
 
-The joiner is the new version of the `StructuredTaskScope.ShutdownOnSuccess` class we used in previous versions. It waits for any subtask to complete successfully, and returns the result of the first successful subtask. The remaining subtasks are properly cancelled. If all subtasks fail, it throws a `StructuredTaskScope.FailedException`.
+The joiner is the new version of the `StructuredTaskScope.ShutdownOnSuccess` class we used in previous versions. It waits for any subtask to complete successfully, and returns the result of the first successful subtask. The remaining subtasks are properly cancelled. If all subtasks fail, it throws a `StructuredTaskScope.FailedException`. We can retrieve an instance of this joiner by calling the static factory method `Joiner.anySuccessfulResultOrThrow()`.
 
 If you remember, in the previous article we simulate the two subtasks that fetch a GitHub user repository from a cache and from GitHub directly. The first tasks that succeeds returns its result.
 
@@ -429,11 +429,63 @@ class FindRepositoriesByUserIdCache implements FindRepositoriesByUserIdPort {
 }
 ```
 
+As you might remember, the above implementation throws a `NoSuchElementException` if the user is not found in the cache to show that the joiner discard the subtask that fails if any following subtask succeeds. We can now implement the `FindRepositoriesByUserIdPort` to fetch the repositories both from the cache and from GitHub:
 
+```java
+class GitHubCachedRepository implements FindRepositoriesByUserIdPort {
 
+  private final FindRepositoriesByUserIdPort repository;
+  private final FindRepositoriesByUserIdCache cache;
 
+  GitHubCachedRepository(
+      FindRepositoriesByUserIdPort repository, FindRepositoriesByUserIdCache cache) {
+    this.repository = repository;
+    this.cache = cache;
+  }
 
+  @Override
+  public List<Repository> findRepositories(UserId userId)
+      throws InterruptedException, FailedException {
+    try (var scope =
+        StructuredTaskScope.open(Joiner.<List<Repository>>anySuccessfulResultOrThrow())) {
+      scope.fork(() -> cache.findRepositories(userId));
+      scope.fork(
+          () -> {
+            final List<Repository> repositories = repository.findRepositories(userId);
+            cache.addToCache(userId, repositories);
+            return repositories;
+          });
+      return scope.join();
+    }
+  }
+}
+```
 
+As the best practice says, if we retrieve the repositories directly from GitHub, we also add them to the cache for future requests. Let's play with the new service. First, we'll use it to fetch a user that is not in the cache, so it will be fetched from GitHub.
+
+```java
+void main() throws InterruptedException {
+  final GitHubRepository gitHubRepository = new GitHubRepository();
+  final FindRepositoriesByUserIdCache cache = new FindRepositoriesByUserIdCache();
+  final FindRepositoriesByUserIdPort gitHubCachedRepository =
+      new GitHubCachedRepository(gitHubRepository, cache);
+  final List<Repository> repositories = gitHubCachedRepository.findRepositories(new UserId(1L));
+  LOGGER.info("GitHub user's repositories: {}", repositories);
+}
+```
+
+We expect the cache to throw an exception since the repositories of the user with `UserId(1L)` are not cached and the repository to complete the execution successfully. As we said, the `AnySuccessful<T>` joiner waits for the first successful task. The output of the execution is, in fact, the following:
+
+```
+11:53:52.760 [virtual-27] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+11:53:52.864 [virtual-25] INFO  in.rcard.sc.Main - No cached repositories found for user with id 'UserId[value=1]'
+11:53:53.773 [virtual-27] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
+11:53:53.877 [main] INFO  in.rcard.sc.Main - GitHub user's repositories: [Repository[name=raise4s, visibility=PUBLIC, uri=https://github.com/rcardin/raise4s], Repository[name=sus4s, visibility=PUBLIC, uri=https://github.com/rcardin/sus4s]]
+```
+
+As we can see, the cache task throws an exception, and the repository task completes successfully. The computation stops, and the result is the one we expect.
+
+The other left cases behaviors are the same as in the previous versions, and we're not going to cover them in this article.
 
 
 The `Joiner` interface is a functional interface that defines a single method purely abstract method:
