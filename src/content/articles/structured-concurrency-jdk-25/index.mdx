@@ -485,7 +485,7 @@ We expect the cache to throw an exception since the repositories of the user wit
 
 As we can see, the cache task throws an exception, and the repository task completes successfully. The computation stops, and the result is the one we expect.
 
-The other left cases behaviors are the same as in the previous versions, and we're not going to cover them in this article.
+The other left cases behaviors are the same as in the previous versions, and we're not going to cover them in this article. The only difference with the previous versions is that it's not possible to give a remapping function to transform the exception thrown by the `join()` method. We saw the same bahaviour with the previous joiners we saw.
 
 
 The `Joiner` interface is a functional interface that defines a single method purely abstract method:
@@ -533,7 +533,89 @@ default boolean onComplete(Subtask<? extends T> subtask) {
 
 As the names suggest, the `onFork()` method is called when a subtask is forked, and the `onComplete()` method is called when a subtask completes. Both methods return a boolean value that indicates whether the outer scope should be cancelled or not. Be careful, though: the `onComplete` method is not called if the subtask completes after the outer scope has been cancelled.
 
+Until now we saw the new versions of the old structured concurrency policies, but in the JDK 25 there are also new joiners that implement new concurrency policies. Let's see them in action.
 
+## New Structured Concurrency Policies (aka Joiners) in JDK 25
+
+There will be new joiners in JDK 25 that implement new concurrency policies, which are not just variations of the old ones. These joiners provide more flexibility and power to structured concurrency.
+
+The first one is the one we can retrieve using the `Joiner.awaitAll()` method. This joiner waits for all subtasks to complete, regardless of success or failure. It does not throw an exception if any subtask fails, and it always returns a simple `null`. Basically, we can use it when we are no interested in the results of the subtasks, or when our subtasks perform some side effects that we want to wait for, but we don't care about their results.
+
+Let's built an example that uses this joiner. Let's say we want to preload the cache for some GitHub users before starting the application. First, we need to create a port to retrieve more than one user at a time:
+
+```java
+interface FindRepositoriesByUserIdListPort {
+  Map<UserId, List<Repository>> findRepositories(List<UserId> userIds)
+      throws InterruptedException;
+}
+```
+
+We return a map of `UserId` to a list of `Repository` for convenience. We want the implementation to fetch the repositories for a list of users concurrently, and we want to wait for all subtasks to complete, regardless of success or failure. We can implement the port as follows:
+
+```java
+class GitHubRepository
+      implements FindUserByIdPort, FindRepositoriesByUserIdPort, FindRepositoriesByUserIdListPort {
+
+  // Omissis...
+
+  @Override
+  public Map<UserId, List<Repository>> findRepositories(List<UserId> userIds)
+      throws InterruptedException {
+    var repositoriesByUserId = new HashMap<UserId, List<Repository>>();
+    try (var scope = StructuredTaskScope.open(Joiner.awaitAll())) {
+      userIds.forEach(
+          userId -> {
+            if (userId.equals(new UserId(42))) {
+              throw new RuntimeException(
+                  "Network error while finding repositories for user '%s'".formatted(userId));
+            }
+            scope.fork(
+                () -> {
+                  final List<Repository> repositories = findRepositories(userId);
+                  repositoriesByUserId.put(userId, repositories);
+                  return repositories;
+                });
+          });
+      scope.join();
+    }
+    return repositoriesByUserId;
+  }
+}
+```
+
+We throw an exception for the user with `UserId(42)` to simulate a failure in one of the subtasks. Let's use the new port to preload the cache for some users. We change the `FindRepositoriesByUserIdCache` as follows:
+
+```java
+class FindRepositoriesByUserIdCache implements FindRepositoriesByUserIdPort {
+
+  private final Map<UserId, List<Repository>> cache;
+  public FindRepositoriesByUserIdCache(FindRepositoriesByUserIdListPort findRepositories) throws InterruptedException {
+    this.cache = findRepositories.findRepositories(List.of(new UserId(1L), new UserId(2L), new UserId(42L)));
+  }
+
+  @Override
+  public List<Repository> findRepositories(UserId userId) throws InterruptedException {
+    // Simulates access to a distributed cache (Redis?)
+    delay(Duration.ofMillis(100L));
+    final List<Repository> repositories = cache.get(userId);
+    if (repositories == null) {
+      LOGGER.info("No cached repositories found for user with id '{}'", userId);
+      throw new NoSuchElementException(
+          "No cached repositories found for user with id '%s'".formatted(userId));
+    }
+    return repositories;
+  }
+
+  public void addToCache(UserId userId, List<Repository> repositories)
+      throws InterruptedException {
+    // Simulates access to a distributed cache (Redis?)
+    delay(Duration.ofMillis(100L));
+    cache.put(userId, repositories);
+  }
+}
+```
+
+As you can see, we changed the constructor to preload the cache with the repositories of the user with 1, 2, and 42.
 
 
 
