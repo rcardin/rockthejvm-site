@@ -565,12 +565,13 @@ class GitHubRepository
     try (var scope = StructuredTaskScope.open(Joiner.awaitAll())) {
       userIds.forEach(
           userId -> {
-            if (userId.equals(new UserId(42))) {
-              throw new RuntimeException(
-                  "Network error while finding repositories for user '%s'".formatted(userId));
-            }
             scope.fork(
                 () -> {
+                  if (userId.equals(new UserId(42))) {
+                    throw new RuntimeException(
+                        "Network error while finding repositories for user '%s'"
+                            .formatted(userId));
+                  }
                   final List<Repository> repositories = findRepositories(userId);
                   repositoriesByUserId.put(userId, repositories);
                   return repositories;
@@ -615,7 +616,34 @@ class FindRepositoriesByUserIdCache implements FindRepositoriesByUserIdPort {
 }
 ```
 
-As you can see, we changed the constructor to preload the cache with the repositories of the user with 1, 2, and 42.
+As you can see, we changed the constructor to preload the cache with the repositories of the user with 1, 2, and 42. Let's use the new port to preload the cache and ask for the `UserId(42)` in the `main` method:
+
+```java
+void main() throws InterruptedException {
+  final GitHubRepository gitHubRepository = new GitHubRepository();
+  final FindRepositoriesByUserIdCache cache = new FindRepositoriesByUserIdCache(gitHubRepository);
+
+  final List<Repository> repositories = cache.findRepositories(new UserId(42L));
+
+  LOGGER.info("GitHub user's repositories: {}", repositories);
+}
+```
+
+When we run the `main` method, we should see an output similar to the following:
+
+```
+21:03:20.708 [virtual-25] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+21:03:20.708 [virtual-27] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=2]'
+21:03:21.718 [virtual-27] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=2]'
+21:03:21.718 [virtual-25] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
+21:03:21.825 [main] INFO  in.rcard.sc.Main - No cached repositories found for user with id 'UserId[value=42]'
+Exception in thread "main" java.util.NoSuchElementException: No cached repositories found for user with id 'UserId[value=42]'
+	at in.rcard.sc.Main$FindRepositoriesByUserIdCache.findRepositories(Main.java:173)
+	at in.rcard.sc.Main.main(Main.java:219)
+```
+
+As expected, even if the subtask that fetches the repositories for the user with `UserId(42L)` fails, the other subtasks complete successfully. In fact, the output shows that the repositories for the users with `UserId(1L)` and `UserId(2L)` are found. So, the `scope.join()` method did not throw an exception, and waited for the end of all the three subtasks. The last exception comes from the implementation of the `cache.findRepositories(new UserId(42L))`, which is not related to the `awaitAll()` joiner.
+
 
 
 
