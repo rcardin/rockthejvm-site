@@ -644,7 +644,66 @@ Exception in thread "main" java.util.NoSuchElementException: No cached repositor
 
 As expected, even if the subtask that fetches the repositories for the user with `UserId(42L)` fails, the other subtasks complete successfully. In fact, the output shows that the repositories for the users with `UserId(1L)` and `UserId(2L)` are found. So, the `scope.join()` method did not throw an exception, and waited for the end of all the three subtasks. The last exception comes from the implementation of the `cache.findRepositories(new UserId(42L))`, which is not related to the `awaitAll()` joiner.
 
+The last joiner we see is the `Joiner.allUntil` joiner. Probably, it's the most powerful joiner introduced in JDK 25. It allows us to define a custom joiner that collects results from all subtasks until a certain condition is met. This joiner can be used to implement complex concurrency patterns. Let's start from the definition of the joiner:
 
+```java
+// JDK 25 Code Snippet
+static final class AllSubtasks<T> implements Joiner<T, Stream<Subtask<T>>> {
+
+  private final Predicate<Subtask<? extends T>> isDone;
+
+  AllSubtasks(Predicate<Subtask<? extends T>> isDone) {
+    this.isDone = Objects.requireNonNull(isDone);
+  }
+
+  // Omissis...
+}
+```
+
+The joiner returns a stream of the forked subtasks, instead of a single result. Plus, the joiner takes a `Predicate<Subtask<? extends T>>` as a parameter, which is used to determine when to stop collecting results from the subtasks. In detail, when the predicate evaluates to `true`, the joiner stops collecting results and cancels any remaining subtasks. So, the returned subtasks can be in any state, including `SUCCESS`, `FAILED` for those that thrown an exception during the execution, and `UNAVAILABLE`for those who were cancelled.
+
+As usual, we need an example to understand well how to use this joiner. Let's say we want to fetch the README file from multiple GitHub repositories concurrently, but we want to stop fetching as soon as we find a repository that has a README file. First, we need to create a port to fetch the files' names from a repository:
+
+```java
+interface FindAllRepositoryFilesPort {
+  List<String> findAllFiles(Repository repository);
+}
+```
+
+We can implement this port adding it to the `GitHubRepository` class as follows:
+
+```java
+class GitHubRepository
+    implements FindUserByIdPort,
+        FindRepositoriesByUserIdPort,
+        FindRepositoriesByUserIdListPort,
+        FindAllRepositoryFilesPort {
+  // Omissis...
+
+  @Override
+  public List<String> findAllFiles(Repository repository) {
+    LOGGER.info("Finding files for repository '{}'", repository.name);
+    switch (repository.name) {
+    case "raise4s" -> {
+        return List.of("README.md", "src/main/scala/in/rcard/raise4s/Main.scala");
+    }
+    case "sus4s" -> {
+        return List.of("src/main/scala/in/rcard/sus4s/Main.scala");
+    }
+    case "yaes" -> {
+        return List.of("src/test/scala/in/rcard/yaes/MainTest.scala");
+    }
+    default -> throw new RuntimeException("Unknown repository '%s'".formatted(repository.name));
+    }
+  }
+}
+```
+
+As we can see, only the `raise4s` repository has a `README.md` file. Now, we can implement the use case to find the README file from multiple repositories:
+
+```java
+
+```
 
 
 
