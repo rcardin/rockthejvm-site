@@ -681,31 +681,126 @@ class GitHubRepository
   // Omissis...
 
   @Override
-  public List<String> findAllFiles(Repository repository) {
+  public List<String> findAllFiles(Repository repository) throws InterruptedException {
     LOGGER.info("Finding files for repository '{}'", repository.name);
     switch (repository.name) {
-    case "raise4s" -> {
+      case "raise4s" -> {
+        delay(Duration.ofMillis(500L));
         return List.of("README.md", "src/main/scala/in/rcard/raise4s/Main.scala");
-    }
-    case "sus4s" -> {
+      }
+      case "sus4s" -> {
+        delay(Duration.ofMillis(100L));
         return List.of("src/main/scala/in/rcard/sus4s/Main.scala");
-    }
-    case "yaes" -> {
+      }
+      case "yaes" -> {
+        delay(Duration.ofMillis(700L));
         return List.of("src/test/scala/in/rcard/yaes/MainTest.scala");
-    }
-    default -> throw new RuntimeException("Unknown repository '%s'".formatted(repository.name));
+      }
+      default -> {
+        delay(Duration.ofMillis(250L));
+        throw new RuntimeException("Unknown repository '%s'".formatted(repository.name));
+      }
     }
   }
 }
 ```
 
-As we can see, only the `raise4s` repository has a `README.md` file. Now, we can implement the use case to find the README file from multiple repositories:
+As we can see, only the `raise4s` repository has a `README.md` file. We added some delay for each repository to simulate the time it takes to fetch the files. Now, we can implement the use case to find the README file from multiple repositories. First, we need to add a data structure to hold the repository and its files:
 
 ```java
-
+record RepoStructure(Repository repository, List<String> files) {}
 ```
 
+Now, we can use it to implement the use case:
 
+```java
+interface FirstRepositoryByFileNameUseCase {
+  Optional<Repository> firstRepositoryByFileName(
+      List<Repository> repositories, String fileNameToMatch) throws InterruptedException;
+}
+
+class FirstRepositoryByFileNameService implements FirstRepositoryByFileNameUseCase {
+  private final FindAllRepositoryFilesPort findAllFilesPort;
+  FirstRepositoryByFileNameService(FindAllRepositoryFilesPort findAllFilesPort) {
+    this.findAllFilesPort = findAllFilesPort;
+  }
+  @Override
+  public Optional<Repository> firstRepositoryByFileName(
+      List<Repository> repositories, String fileNameToMatch) throws InterruptedException {
+
+    class CancelIfFound implements Predicate<Subtask<? extends RepoStructure>> {
+      @Override
+      public boolean test(Subtask<? extends RepoStructure> subtask) {
+        return subtask.state() == Subtask.State.SUCCESS
+            && subtask.get().files().contains(fileNameToMatch);
+      }
+    }
+
+    var cancelIfFound = new CancelIfFound();
+
+    try (var scope = StructuredTaskScope.open(Joiner.<RepoStructure>allUntil(cancelIfFound))) {
+      repositories.forEach(
+          repository ->
+              scope.fork(
+                  () -> {
+                    final List<String> files = findAllFilesPort.findAllFiles(repository);
+                    LOGGER.info(
+                          "Found {} files for repository '{}'", files.size(), repository.name);†¬
+                    return new RepoStructure(repository, files);
+                  }));
+      return scope
+          .join()
+          .filter(subtask -> subtask.state() == Subtask.State.SUCCESS)
+          .findFirst()
+          .map(subtask -> subtask.get().repository());
+    }
+  }
+}
+```
+
+There are a few things to notice in the above implementation. We implemented a custom `Predicate<Subtask<? extends RepoStructure>>` that checks if the subtask has completed successfully and if the files returned by the subtask contain the file we are looking for. The class `CancelIfFound` will be used as our stopping condition for the joiner. (By the way, do you know that you can define classes inside methods in Java?).
+
+We then use the `Joiner.allUntil(cancelIfFound)` to create a joiner that collects results from all subtasks until the predicate evaluates to `true`. Finally, we return the first repository that has the file we are looking for, if any.
+
+Let's wire everything together in the `main` method:
+
+```java
+void main() throws InterruptedException {
+  final FirstRepositoryByFileNameUseCase useCase =
+      new FirstRepositoryByFileNameService(new GitHubRepository());
+  final Optional<Repository> maybeRepoWithReadme =
+      useCase.firstRepositoryByFileName(
+          List.of(
+              new Repository(
+                  "raise4s", Visibility.PUBLIC, URI.create("https://github.com/rcardin/raise4s")),
+              new Repository(
+                  "sus4s", Visibility.PUBLIC, URI.create("https://github.com/rcardin/sus4s")),
+              new Repository(
+                  "yaes", Visibility.PUBLIC, URI.create("https://github.com/rcardin/yaes")),
+              new Repository(
+                  "kafkaesque",
+                  Visibility.PUBLIC,
+                  URI.create("https://github.com/rcardin/kafkaesque"))),
+          "README.md");
+  LOGGER.info(
+      "First repository with 'README.md': {}",
+      maybeRepoWithReadme.map(Repository::name).orElse("Not found"));
+}
+```
+
+We want to find the first repository that has a `README.md` file. If you remember how we configured the delays, we the first coroutine will throw an exception for the repository `unknown`, and the second one will return the files for the `sus4s` repository, which does not contain a `README.md` file. The third coroutine will return the files for the `raise4s` repository, which contains the file we are looking for. The last coroutine will never finish, as the joiner will cancel it as soon as it finds the first repository with the `README.md` file.
+
+When we run the `main` method, we should see the following output:
+
+```
+21:48:48.193 [virtual-30] INFO  in.rcard.sc.Main - Finding files for repository 'yaes'
+21:48:48.193 [virtual-25] INFO  in.rcard.sc.Main - Finding files for repository 'raise4s'
+21:48:48.193 [virtual-32] INFO  in.rcard.sc.Main - Finding files for repository 'kafkaesque'
+21:48:48.193 [virtual-27] INFO  in.rcard.sc.Main - Finding files for repository 'sus4s'
+21:48:48.305 [virtual-27] INFO  in.rcard.sc.Main - Found 1 files for repository 'sus4s'
+21:48:48.704 [virtual-25] INFO  in.rcard.sc.Main - Found 2 files for repository 'raise4s'
+21:48:48.708 [main] INFO  in.rcard.sc.Main - First repository with 'README.md': raise4s
+```
 
 
 
@@ -926,6 +1021,11 @@ public class ResilientGitHubService {
     }
 }
 ```
+
+
+
+
+
 
 ## Exception Handling in JDK 25
 
