@@ -788,7 +788,7 @@ void main() throws InterruptedException {
 }
 ```
 
-We want to find the first repository that has a `README.md` file. If you remember how we configured the delays, we the first coroutine will throw an exception for the repository `unknown`, and the second one will return the files for the `sus4s` repository, which does not contain a `README.md` file. The third coroutine will return the files for the `raise4s` repository, which contains the file we are looking for. The last coroutine will never finish, as the joiner will cancel it as soon as it finds the first repository with the `README.md` file.
+We want to find the first repository that has a `README.md` file. If you remember how we configured the delays, a coroutine will throw an exception for the repository `kafkaesque`, and another one will return the files for the `sus4s` repository, which does not contain a `README.md` file. Then, we have the coroutine that will return the files for the `raise4s` repository, which contains the file we are looking for. The last coroutine will never finish, as the joiner will cancel it as soon as it finds the first repository with the `README.md` file.
 
 When we run the `main` method, we should see the following output:
 
@@ -803,7 +803,9 @@ When we run the `main` method, we should see the following output:
 ```
 
 
+The logs show exactly what we expected: the coroutine that fetches the files for the `sus4s` repository completes first, but it does not contain the `README.md` file, so it continues to fetch the files for the `raise4s` repository, which contains the file we are looking for. The coroutine that fetches the files for the `kafkaesque` repository thrown an exception, which is ignored. The coroutine for the `yaes` repository never completed since it was cancelled by the runtime.
 
+There no any other predefined joiners in JDK 25, but you can create your own joiners by implementing the `Joiner<T, R>` interface. This allows you to define custom concurrency policies that suit your specific needs. Let's see how in the next section.
 
 
 
