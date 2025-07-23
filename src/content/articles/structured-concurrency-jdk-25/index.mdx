@@ -487,52 +487,6 @@ As we can see, the cache task throws an exception, and the repository task compl
 
 The other left cases behaviors are the same as in the previous versions, and we're not going to cover them in this article. The only difference with the previous versions is that it's not possible to give a remapping function to transform the exception thrown by the `join()` method. We saw the same bahaviour with the previous joiners we saw.
 
-
-The `Joiner` interface is a functional interface that defines a single method purely abstract method:
-
-```java
-// JDK 25 Code Snippet
-public interface Joiner<T, R> {
-    R result() throws Throwable;
-}
-```
-
-As you might guess, the `join()` internally invokes the the `result()` method of the `Joiner` instance to retrieve the final result of the scope.
-
-```java
-// JDK 25 Code Snippet
-@Override
-public R join() throws InterruptedException {
-    // A lot of code here...
-    try {
-        return joiner.result();
-    } catch (Throwable e) {
-        throw new FailedException(e);
-    }
-}
-```
-
-The `Joiner` interface is generic also on `T` other than `R`. The `T` type variable represents the type of the subtasks, as we saw earlier. The `Joiner` uses the type variable `T` the remaining methods it exposes:
-
-```java
-// JDK 25 Code Snippet
-default boolean onFork(Subtask<? extends T> subtask) {
-    if (subtask.state() != Subtask.State.UNAVAILABLE) {
-        throw new IllegalArgumentException("Subtask not in UNAVAILABLE state");
-    }
-    return false;
-}
-
-default boolean onComplete(Subtask<? extends T> subtask) {
-    if (subtask.state() == Subtask.State.UNAVAILABLE) {
-        throw new IllegalArgumentException("Subtask has not completed");
-    }
-    return false;
-}
-```
-
-As the names suggest, the `onFork()` method is called when a subtask is forked, and the `onComplete()` method is called when a subtask completes. Both methods return a boolean value that indicates whether the outer scope should be cancelled or not. Be careful, though: the `onComplete` method is not called if the subtask completes after the outer scope has been cancelled.
-
 Until now we saw the new versions of the old structured concurrency policies, but in the JDK 25 there are also new joiners that implement new concurrency policies. Let's see them in action.
 
 ## New Structured Concurrency Policies (aka Joiners) in JDK 25
@@ -807,7 +761,117 @@ The logs show exactly what we expected: the coroutine that fetches the files for
 
 There no any other predefined joiners in JDK 25, but you can create your own joiners by implementing the `Joiner<T, R>` interface. This allows you to define custom concurrency policies that suit your specific needs. Let's see how in the next section.
 
+## Custom Joiners: Implementing Your Own Concurrency Policies
 
+In addition to the built-in joiners, you can create your own joiners to implement custom concurrency policies. This can be useful if you have specific requirements that are not met by the default joiners. As we saw in the previous article, the JDK does not provide a structured concurrency policy implementing the `race` pattern, where the first subtask that completes, successfully or not, returns its result, while the other subtasks are cancelled. We can implement this policy by creating a custom joiner.
+
+The `Joiner` interface is a functional interface that defines a single method purely abstract method:
+
+```java
+// JDK 25 Code Snippet
+@FunctionalInterface
+public interface Joiner<T, R> {
+    R result() throws Throwable;
+}
+```
+
+The `Joiner` interface is generic also on `T` other than `R`. The `T` type variable represents the type of the result of the subtasks, while the `R` type variable represents the type of the final result of the scope.
+
+As you might guess, the `StructuredTaskScope.join()` internally invokes the the `result()` method of the `Joiner` instance to retrieve the final result of the scope.
+
+```java
+// JDK 25 Code Snippet
+@Override
+public R join() throws InterruptedException {
+    // A lot of code here...
+    try {
+        return joiner.result();
+    } catch (Throwable e) {
+        throw new FailedException(e);
+    }
+}
+```
+
+We can configure two aspects of the execution of a joiner, what happens when a subtask is forked and what happens when a subtask completes. For doing this, we can override the `onFork()` and `onComplete()` methods of the `Joiner` interface:
+
+```java
+// JDK 25 Code Snippet
+default boolean onFork(Subtask<? extends T> subtask) {
+    if (subtask.state() != Subtask.State.UNAVAILABLE) {
+        throw new IllegalArgumentException("Subtask not in UNAVAILABLE state");
+    }
+    return false;
+}
+
+default boolean onComplete(Subtask<? extends T> subtask) {
+    if (subtask.state() == Subtask.State.UNAVAILABLE) {
+        throw new IllegalArgumentException("Subtask has not completed");
+    }
+    return false;
+}
+```
+
+As the names suggest, the `onFork()` method is called when a subtask is forked, and the `onComplete()` method is called when a subtask completes. Both methods return a boolean value that indicates whether the outer scope should be cancelled or not.
+
+In our case, we want to implement a joiner that collects the results of all subtasks until one of them completes successfully or fails. If a subtask completes successfully, we return its result; if it fails, we cancel the remaining subtasks and return the result of the first successful subtask. Let's call it `FirstCompleted`. We also need some variables to hold the result of the first completed subtask:
+
+```java
+class FirstCompleted<T> implements Joiner<T, T> {
+  private T firstResult;
+  private Throwable firstException;
+
+  // Omissis...
+}
+```
+
+We don't need to do anything in the `onFork()` method, so we can leave it as the default implementation. In the `onComplete()` method, we check the state of the subtask and update our variables accordingly. Remember though that the `onComplete()` must be thread safe, as it can be called concurrently by multiple threads. Then, the access to the `firstResult` and `firstException` variables must be synchronized:
+
+```java
+@Override
+public boolean onComplete(Subtask<? extends T> subtask) {
+  return switch (subtask.state()) {
+    case SUCCESS -> {
+      synchronized (this) {
+        if (firstResult == null) {
+          firstResult = subtask.get();
+        }
+        yield true;
+      }
+    }
+    case FAILED -> {
+      synchronized (this) {
+        if (firstException == null) {
+          firstException = subtask.exception();
+        }
+        yield true;
+      }
+    }
+    case UNAVAILABLE -> Joiner.super.onComplete(subtask);
+  };
+}
+```
+
+In the previous article we used a reentrant lock to synchronize the access to the shared variables, since in JDK 23 the execution of a synchronized block pins the carrier thread to the virtual thread that is executing the block. In JDK 25, this is no longer the case, so we can use a simple synchronized block to protect the access to the shared variables (see [The Ultimate Guide to Java Virtual Threads - Pinned Virtual Threads](https://rockthejvm.com/articles/the-ultimate-guide-to-java-virtual-threads#pinned-virtual-threads) for further details).
+
+As you can see, in both `SUCCESS` and `FAILED` cases, we are returning `true`, which means that the outer scope should be cancelled. This is because we want to stop the execution of the remaining subtasks as soon as one of them completes successfully or fails. In previous versions of the JDK we must invoke the `StructuredTaskScope.shutdown()` method explicitly to cancel the remaining subtasks.
+
+Finally, we implement the `result()` method to return the first result or throw an exception if no subtask completed successfully:
+
+```java
+@Override
+public T result() throws Throwable {
+  if (firstException != null) {
+    throw firstException;
+  }
+  return firstResult;
+}
+```
+
+Nothing special here, we just check if the `firstException` is not null and throw it if it is. Otherwise, we return the `firstResult`.
+
+You might have noticed that all the checks on thread ownership are gone. In the JDK 25 the Java engineers made a big refactoring to better separate the concerns of the structured concurrency API. Now, the `StructuredTaskScope` is responsible for managing the lifecycle of the subtasks, while the `Joiner` is responsible for defining the concurrency policy. This means that we don't need to check if the subtask is owned by the current thread anymore, as the `StructuredTaskScope` takes care of that.
+
+Be careful, though: the `onComplete` method is not called if the subtask completes after the outer scope has been cancelled.
 
 
 
