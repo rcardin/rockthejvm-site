@@ -973,326 +973,102 @@ Caused by: java.util.concurrent.TimeoutException: Timeout of PT0.5S reached
 
 The execution hit the timeout, and the subtask retrieving the repositories was cancelled. In fact, it didn't write the second log message.
 
-### Built-in Joiners
+Whereas, if we increase the timeout to 1.5 seconds, the computation retrieves the repositories successfully:
 
-JDK 25 provides several built-in joiners for common patterns:
+```
+09:26:18.321 [virtual-25] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+09:26:19.335 [virtual-25] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
+09:26:19.338 [main] INFO  in.rcard.sc.Main - GitHub user's repositories: [Repository[name=raise4s, visibility=PUBLIC, uri=https://github.com/rcardin/raise4s], Repository[name=sus4s, visibility=PUBLIC, uri=https://github.com/rcardin/sus4s]]
+```
 
-#### 1. allSuccessfulOrThrow()
+As we did in the previous article, we could use the `FirstCompleted` joiner to implement the `race` structured concurrency primitive. However, it does not differ from that we did previously, so we will omit that example here.
 
-This joiner waits for all subtasks to succeed and returns a stream of all subtasks:
+As we seen, we created a customer joiner and we used it to implement a timeout policy for a use case. If we need to set up a timeout the JDK 25 lets us to configure the structured task scope with a timeout, and other configuration options. Let's see how to do that in the next section.
+
+## Configuring Structured Task Scopes in JDK 25
+
+As we saw, when creating a `StructuredTaskScope`, we can pass a `Joiner` instance to the `open()` method. This allows us to define the concurrency policy for the scope. However, in JDK 25, the `open()` has another overload that allows us to configure the scope with additional options:
 
 ```java
-public List<Repository> findAllRepositoriesFromMultipleSources(UserId userId) throws InterruptedException {
-    List<FindRepositoriesByUserIdPort> sources = getRepositorySources();
-
-    try (var scope = StructuredTaskScope.open(Joiner.allSuccessfulOrThrow())) {
-        // Fork a task for each source
-        sources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
-
-        // Get all results and flatten them
-        return scope.join()
-                    .map(Subtask::get)
-                    .flatMap(List::stream)
-                    .distinct()
-                    .toList();
-    }
-}
+// JDK 25 Code Snippet
+static <T, R> StructuredTaskScope<T, R> open(Joiner<? super T, ? extends R> joiner,
+    Function<Configuration, Configuration> configFunction)
 ```
 
-#### 2. anySuccessfulResultOrThrow()
-
-This joiner implements a "race" pattern - it returns the result of the first subtask that succeeds:
+The type implementing the configuration is the `Configuration` interface:
 
 ```java
-public List<Repository> findRepositoriesWithFallback(UserId userId) throws InterruptedException {
-    try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
-        // Try cache first
-        scope.fork(() -> cacheService.findRepositories(userId));
-        // Fallback to API
-        scope.fork(() -> apiService.findRepositories(userId));
-
-        // Returns the result of whichever completes successfully first
-        return scope.join();
-    }
+// JDK 25 Code Snippet
+sealed interface Configuration permits StructuredTaskScopeImpl.ConfigImpl {
+  Configuration withThreadFactory(ThreadFactory threadFactory);
+  Configuration withName(String name);
+  Configuration withTimeout(Duration timeout);
 }
 ```
 
-#### 3. awaitAll()
+As we can see, the overloaded `open()` method takes a `Function<Configuration, Configuration>` as a second parameter. The input parameter of the function represents the default configuration of the scope that we can modify using the methods of the `Configuration` interface. We can configure the name of the threads created by the scope for debugging purposes, the thread factory to use if we want to limit the parallelism of the scope, and the maximum execution timeout.
 
-This joiner waits for all subtasks to complete, regardless of success or failure:
+To see the configuration in action, let's implement the previous version of the `FindRepositoriesByUserIdWithTimeout` use case using the new configuration options:
 
 ```java
-public void performCleanupTasks(UserId userId) throws InterruptedException {
-    try (var scope = StructuredTaskScope.open(Joiner.awaitAll())) {
-        scope.fork(() -> cacheService.invalidateUser(userId));
-        scope.fork(() -> logService.logUserAccess(userId));
-        scope.fork(() -> analyticsService.trackUserActivity(userId));
+class FindRepositoriesByUserIdWithConfigTimeout {
 
-        scope.join(); // Waits for all to complete
+  final FindRepositoriesByUserIdPort delegate;
 
-        // Process individual results as needed
-        // All subtasks are guaranteed to be complete
+  FindRepositoriesByUserIdWithConfigTimeout(FindRepositoriesByUserIdPort delegate) {
+    this.delegate = delegate;
+  }
+
+  List<Repository> findRepositories(UserId userId, Duration timeout) throws InterruptedException {
+    try (var scope =
+        StructuredTaskScope.open(
+            Joiner.<List<Repository>>anySuccessfulResultOrThrow(),
+            config -> config.withName("timed").withTimeout(timeout))) {
+      scope.fork(() -> delegate.findRepositories(userId));
+      return scope.join();
     }
+  }
 }
 ```
 
-## Custom Joiners: Advanced Policies
-
-The real power comes from implementing custom joiners. Let's create a joiner that collects successful results while ignoring failures:
+Clearly, using structured concurrency to timeout a single task is an overkill, but it shows how to use the new configuration options. We set also the name of the scope to "timed", and we see that the `Configuration` type works like a builder, allowing us to chain the configuration methods. Every time we call a method on the `Configuration` instance, it returns a new instance with the updated configuration. In fact, the implementation of the `Configuration` interface under the hood is the following:
 
 ```java
-public class CollectSuccessfulJoiner<T> implements StructuredTaskScope.Joiner<T, List<T>> {
-    private final List<T> results = Collections.synchronizedList(new ArrayList<>());
-    private volatile boolean cancelled = false;
+// JDK 25 Code Snippet
+record ConfigImpl(
+    ThreadFactory threadFactory,
+    String name,
+    Duration timeout) implements Configuration {
 
-    @Override
-    public boolean onComplete(StructuredTaskScope.Subtask<? extends T> subtask) {
-        if (subtask.state() == StructuredTaskScope.Subtask.State.SUCCESS) {
-            results.add(subtask.get());
-        }
-        // Never cancel - we want to collect all successful results
-        return false;
-    }
-
-    @Override
-    public List<T> result() throws Throwable {
-        return new ArrayList<>(results);
-    }
+  static Configuration defaultConfig() {
+      return new ConfigImpl(Thread.ofVirtual().factory(), null, null);
+  }
+  @Override
+  public Configuration withThreadFactory(ThreadFactory threadFactory) {
+      return new ConfigImpl(Objects.requireNonNull(threadFactory), name, timeout);
+  }
+  @Override
+  public Configuration withName(String name) {
+      return new ConfigImpl(threadFactory, Objects.requireNonNull(name), timeout);
+  }
+  @Override
+  public Configuration withTimeout(Duration timeout) {
+      return new ConfigImpl(threadFactory, name, Objects.requireNonNull(timeout));
+  }
 }
 ```
 
-Using this custom joiner:
+If we try to use our new `FindRepositoriesByUserIdWithConfigTimeout` class in the `main` method with a timeout equal to 500 milliseconds, we can see that it works as expected:
 
 ```java
-public List<Repository> findRepositoriesFromAllAvailableSources(UserId userId) throws InterruptedException {
-    List<FindRepositoriesByUserIdPort> sources = getAllRepositorySources();
-
-    try (var scope = StructuredTaskScope.open(new CollectSuccessfulJoiner<List<Repository>>())) {
-        // Fork tasks for all sources - some might fail
-        sources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
-
-        // Get all successful results, ignoring failures
-        return scope.join()
-                    .stream()
-                    .flatMap(List::stream)
-                    .distinct()
-                    .toList();
-    }
-}
+14:34:16.960 [virtual-26] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+Exception in thread "main" java.util.concurrent.StructuredTaskScope$TimeoutException
+	at java.base/java.util.concurrent.StructuredTaskScopeImpl.join(StructuredTaskScopeImpl.java:247)
+	at in.rcard.sc.Main$FindRepositoriesByUserIdWithConfigTimeout.findRepositories(Main.java:378)
+	at in.rcard.sc.Main.main(Main.java:390)
 ```
 
-## Enhanced Configuration
-
-JDK 25 introduces powerful configuration options through the `Config` API:
-
-### Setting Timeouts
-
-```java
-public GitHubUser findGitHubUserWithTimeout(UserId userId, Duration timeout)
-    throws InterruptedException {
-
-    try (var scope = StructuredTaskScope.open(
-            Joiner.allSuccessfulOrThrow(),
-            config -> config.withTimeout(timeout))) {
-
-        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
-        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
-
-        scope.join(); // Will throw TimeoutException if timeout expires
-
-        return new GitHubUser(
-            userTask.get(),
-            repositoriesTask.get().map(Subtask::get).toList().get(0) // Example extraction
-        );
-    }
-}
-```
-
-### Custom Thread Factory
-
-```java
-public GitHubUser findGitHubUserWithCustomThreads(UserId userId) throws InterruptedException {
-    ThreadFactory customFactory = Thread.ofVirtual()
-        .name("github-worker-", 0)
-        .factory();
-
-    try (var scope = StructuredTaskScope.open(
-            Joiner.allSuccessfulOrThrow(),
-            config -> config.withThreadFactory(customFactory)
-                           .withName("github-user-scope"))) {
-
-        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
-        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
-
-        scope.join();
-
-        return new GitHubUser(userTask.get(), repositoriesTask.get());
-    }
-}
-```
-
-## Practical Example: Building a Resilient Service
-
-Let's create a comprehensive example that showcases the new capabilities:
-
-```java
-public class ResilientGitHubService {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ResilientGitHubService.class);
-
-    private final List<FindUserByIdPort> userSources;
-    private final List<FindRepositoriesByUserIdPort> repositorySources;
-    private final Duration defaultTimeout = Duration.ofSeconds(5);
-
-    public GitHubUser findGitHubUserResilient(UserId userId) throws InterruptedException {
-        try (var scope = StructuredTaskScope.open(
-                Joiner.allSuccessfulOrThrow(),
-                config -> config.withTimeout(defaultTimeout)
-                               .withName("resilient-github-lookup"))) {
-
-            // Find user with fallback sources
-            var userTask = scope.fork(() -> findUserWithFallback(userId));
-
-            // Find repositories with multiple sources
-            var repositoriesTask = scope.fork(() -> findRepositoriesResilient(userId));
-
-            scope.join();
-
-            return new GitHubUser(userTask.get(), repositoriesTask.get());
-        }
-    }
-
-    private User findUserWithFallback(UserId userId) throws InterruptedException {
-        try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
-            // Try all user sources, return first successful result
-            userSources.forEach(source -> scope.fork(() -> source.findUser(userId)));
-            return scope.join();
-        }
-    }
-
-    private List<Repository> findRepositoriesResilient(UserId userId) throws InterruptedException {
-        try (var scope = StructuredTaskScope.open(new CollectSuccessfulJoiner<List<Repository>>())) {
-            // Try all repository sources, collect all successful results
-            repositorySources.forEach(source -> scope.fork(() -> source.findRepositories(userId)));
-
-            return scope.join()
-                        .stream()
-                        .flatMap(List::stream)
-                        .distinct()
-                        .toList();
-        }
-    }
-}
-```
-
-
-
-
-
-
-## Exception Handling in JDK 25
-
-Exception handling becomes more straightforward with the new API:
-
-```java
-public GitHubUser findGitHubUserWithErrorHandling(UserId userId) {
-    try (var scope = StructuredTaskScope.open()) {
-        var userTask = scope.fork(() -> findUserByIdPort.findUser(userId));
-        var repositoriesTask = scope.fork(() -> findRepositoriesByUserIdPort.findRepositories(userId));
-
-        scope.join();
-
-        return new GitHubUser(userTask.get(), repositoriesTask.get());
-
-    } catch (StructuredTaskScope.FailedException e) {
-        // Handle failures from subtasks
-        Throwable cause = e.getCause();
-        LOGGER.error("Failed to fetch GitHub user data", cause);
-
-        return switch (cause) {
-            case UserNotFoundException unf -> throw new IllegalArgumentException("User not found: " + userId);
-            case NetworkException ne -> throw new ServiceUnavailableException("Network error", ne);
-            default -> throw new RuntimeException("Unexpected error", cause);
-        };
-
-    } catch (StructuredTaskScope.TimeoutException e) {
-        LOGGER.warn("Request timed out for user: {}", userId);
-        throw new RequestTimeoutException("Request timed out");
-
-    } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new RuntimeException("Request was interrupted", e);
-    }
-}
-```
-
-## Migration Guide from Java 21/23 to JDK 25
-
-If you're migrating from the previous structured concurrency API, here's a quick reference:
-
-### Basic Scope Creation
-```java
-// Old (Java 21/23)
-try (var scope = new StructuredTaskScope<>()) { }
-
-// New (JDK 25)
-try (var scope = StructuredTaskScope.open()) { }
-```
-
-### Shutdown on Failure Policy
-```java
-// Old
-try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-    // ...
-    scope.join().throwIfFailed();
-}
-
-// New
-try (var scope = StructuredTaskScope.open()) {
-    // ...
-    scope.join(); // Automatically throws FailedException on failure
-}
-```
-
-### Shutdown on Success Policy
-```java
-// Old
-try (var scope = new StructuredTaskScope.ShutdownOnSuccess<String>()) {
-    // ...
-    return scope.join().result();
-}
-
-// New
-try (var scope = StructuredTaskScope.open(Joiner.anySuccessfulResultOrThrow())) {
-    // ...
-    return scope.join();
-}
-```
-
-## Observability Improvements
-
-JDK 25 enhances observability with better thread dump support. The hierarchical structure of scopes is now clearly visible in JSON thread dumps:
-
-```bash
-jcmd <pid> Thread.dump_to_file -format=json thread_dump.json
-```
-
-This will show the structured relationship between parent and child tasks, making debugging concurrent applications much easier.
-
-## Performance Considerations
-
-The new API brings several performance benefits:
-
-1. **Reduced Object Allocation**: Static factory methods reduce the overhead of scope creation
-2. **Better Memory Management**: Joiners can be optimized for specific use cases
-3. **Enhanced Virtual Thread Integration**: Better integration with virtual threads' lifecycle management
-
-## Best Practices for JDK 25 Structured Concurrency
-
-1. **Use the Default Policy When Possible**: The zero-parameter `open()` method covers most use cases
-2. **Leverage Built-in Joiners**: Before creating custom joiners, check if built-in ones meet your needs
-3. **Configure Timeouts**: Always set reasonable timeouts for external operations
-4. **Handle Interruption Properly**: Ensure your subtasks respond to interruption
-5. **Use Descriptive Names**: Set meaningful names for scopes to improve observability
+Unfortunately, we can't see the name of the scope in the logs.
 
 ## Conclusion
 
