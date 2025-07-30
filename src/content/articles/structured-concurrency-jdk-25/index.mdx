@@ -249,7 +249,7 @@ try (var scope = StructuredTaskScope.open()) {
 }
 ```
 
-Again, nothing changes here, apparently. The only difference is the type of the exception thrown by the `join()` method. In JDK 25, if any subtask fails, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. If you remember, in the previous versions, the `join()` method threw a `java.util.concurrent.ExecutionException`.
+Again, nothing changes here, apparently. The only difference is the type of the exception thrown by the `join()` method. In JDK 25, if any subtask fails, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. If you remember, in the previous versions, the `join()` method threw a `java.util.concurrent.ExecutionException`. The main difference between the two is that the `FailedException` is a unchecked exception, while the `ExecutionException` is an checked exception.
 
 Now, that we saw the basic usage of the new API, let's explore the key differences in the concurrency policies introduced in JDK 25.
 
@@ -869,13 +869,109 @@ public T result() throws Throwable {
 
 Nothing special here, we just check if the `firstException` is not null and throw it if it is. Otherwise, we return the `firstResult`.
 
-You might have noticed that all the checks on thread ownership are gone. In the JDK 25 the Java engineers made a big refactoring to better separate the concerns of the structured concurrency API. Now, the `StructuredTaskScope` is responsible for managing the lifecycle of the subtasks, while the `Joiner` is responsible for defining the concurrency policy. This means that we don't need to check if the subtask is owned by the current thread anymore, as the `StructuredTaskScope` takes care of that.
+You might have noticed that all the checks on thread ownership are gone. In the JDK 25 the Java architects made a big refactoring to better separate the concerns of the structured concurrency API. Now, the `StructuredTaskScope` is responsible for managing the lifecycle of the subtasks, while the `Joiner` is responsible for defining the concurrency policy. This means that we don't need to check if the subtask is owned by the current thread anymore, as the `StructuredTaskScope` takes care of that.
 
 Be careful, though: the `onComplete` method is not called if the subtask completes after the outer scope has been cancelled.
 
+So, the complete implementation of the `FirstCompleted` joiner looks like this:
 
+```java
+class FirstCompleted<T> implements Joiner<T, T> {
+  private T firstResult;
+  private Throwable firstException;
 
+  @Override
+  public boolean onComplete(Subtask<? extends T> subtask) {
+    return switch (subtask.state()) {
+      case SUCCESS -> {
+        synchronized (this) {
+          if (firstResult == null) {
+            firstResult = subtask.get();
+          }
+          yield true;
+        }
+      }
+      case FAILED -> {
+        synchronized (this) {
+          if (firstException == null) {
+            firstException = subtask.exception();
+          }
+          yield true;
+        }
+      }
+      case UNAVAILABLE -> Joiner.super.onComplete(subtask);
+    };
+  }
 
+  @Override
+  public T result() throws Throwable {
+    if (firstException != null) {
+      throw firstException;
+    }
+    return firstResult;
+  }
+}
+```
+
+If you compare this implementation with the one we saw in the previous article, you can see that it is much simpler and cleaner. As we said, it's a consequence of the refactoring made in JDK 25, which separates the concerns of the structured concurrency API.
+
+As in the previous article, we'll use the new concurrency policy to implement a use case that fetches the repositories of a GitHub user within a given timeout. If the repositories are not found within the timeout, we'll fail with an exception. The `FirstCompleted` joiner will ensure the subtasks that don't win the race are cancelled, and we only return the result of the first subtask that completes successfully or fails.
+
+Here is the code:
+
+```java
+class FindRepositoriesByUserIdWithTimeout {
+  final FindRepositoriesByUserIdPort delegate;
+
+  FindRepositoriesByUserIdWithTimeout(FindRepositoriesByUserIdPort delegate) {
+    this.delegate = delegate;
+  }
+
+  List<Repository> findRepositories(UserId userId, Duration timeout) throws InterruptedException {
+    try (var scope = StructuredTaskScope.open(new FirstCompleted<List<Repository>>())) {
+      scope.fork(() -> delegate.findRepositories(userId));
+      scope.fork(
+          () -> {
+            delay(timeout);
+            throw new TimeoutException("Timeout of %s reached".formatted(timeout));
+          });
+      return scope.join();
+    }
+  }
+}
+```
+
+If you remember, the base implementation of the `FindRepositoriesByUserIdPort` waits 1 second before returning the repositories, so simulate the timeout use case passing a timeout of 500 milliseconds:
+
+```java
+void main() throws InterruptedException {
+
+  final GitHubRepository gitHubRepository = new GitHubRepository();
+  final FindRepositoriesByUserIdWithTimeout findRepositoriesWithTimeout =
+      new FindRepositoriesByUserIdWithTimeout(gitHubRepository);
+
+  final List<Repository> repositories =
+      findRepositoriesWithTimeout.findRepositories(new UserId(1L), Duration.ofMillis(500L));
+
+  LOGGER.info("GitHub user's repositories: {}", repositories);
+}
+```
+
+The execution of the `main` method should produce the following output:
+
+```
+09:21:48.571 [virtual-25] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
+Exception in thread "main" java.util.concurrent.StructuredTaskScope$FailedException: java.util.concurrent.TimeoutException: Timeout of PT0.5S reached
+	at java.base/java.util.concurrent.StructuredTaskScopeImpl.join(StructuredTaskScopeImpl.java:258)
+	at in.rcard.sc.Main$FindRepositoriesByUserIdWithTimeout.findRepositories(Main.java:359)
+	at in.rcard.sc.Main.main(Main.java:371)
+Caused by: java.util.concurrent.TimeoutException: Timeout of PT0.5S reached
+	at in.rcard.sc.Main$FindRepositoriesByUserIdWithTimeout.lambda$findRepositories$1(Main.java:357)
+	at java.base/java.util.concurrent.StructuredTaskScopeImpl$SubtaskImpl.run(StructuredTaskScopeImpl.java:325)
+	at java.base/java.lang.VirtualThread.run(VirtualThread.java:456)
+```
+
+The execution hit the timeout, and the subtask retrieving the repositories was cancelled. In fact, it didn't write the second log message.
 
 ### Built-in Joiners
 
