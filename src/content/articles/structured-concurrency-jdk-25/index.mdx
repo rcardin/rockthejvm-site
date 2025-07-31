@@ -1070,12 +1070,81 @@ Exception in thread "main" java.util.concurrent.StructuredTaskScope$TimeoutExcep
 
 Unfortunately, we can't see the name of the scope in the logs.
 
-## Conclusion
+## Conclusions
 
-JDK 25's structured concurrency represents a significant evolution from the previous versions. The new `Joiner` API provides unprecedented flexibility while maintaining the simplicity that makes structured concurrency so appealing. The static factory methods and enhanced configuration options make the API more intuitive and powerful.
+Our journey through the new structured concurrency features in JDK 25 has been enlightening. As we saw, the changes compared to previous versions are mainly syntactical, making the API more intuitive and easier to use. In details, the Java architects refactored the structured concurrency API to separate the concerns of the `StructuredTaskScope` and the `Joiner`, allowing us to define custom concurrency policies more easily. In doing so, they introduced new concurrency policies through the `Joiner` class, such as `Joiner.awaitAll()` and `Joiner.allUntil()`, which provide more flexibility and power to structured concurrency. We also saw how to create custom joiners to implement new concurrency patterns, such as the `FirstCompleted` joiner, which allows us to implement the `race` pattern and timeout policies in a more elegant way. Finally, we explored the new configuration options for structured task scopes, which allow us to set timeouts and other parameters in a more convenient way.
 
-The journey from unstructured concurrency with `ExecutorService` to the elegant structured concurrency of JDK 25 shows how Java continues to evolve to meet the needs of modern concurrent programming. Virtual threads provide the scalability, and structured concurrency provides the safety and clarity we need to build robust, maintainable applications.
+## Appendix A
 
-As structured concurrency moves towards finalization in future Java releases, now is the perfect time to start experimenting with these new APIs and integrating them into your applications. The combination of virtual threads and structured concurrency represents the future of concurrent programming in Java, offering both performance and maintainability that traditional approaches simply cannot match.
+TODO
 
-The concepts we've explored here - from basic scope creation to custom joiners and resilient service patterns - provide a solid foundation for building the next generation of concurrent Java applications. As you adopt these patterns, you'll find that concurrent programming becomes not just more performant, but also more enjoyable and less error-prone.
+## Appendix B
+
+As usual, we provide the complete `pom.xml` file for the project, so you can run the code examples without any hassle:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>in.rcardi</groupId>
+    <artifactId>structured-concurrency-jdk-25</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <logback.version>1.5.13</logback.version>
+        <slf4j.version>2.0.9</slf4j.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.1</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.12.1</version>
+                <configuration>
+                    <source>25</source>
+                    <target>25</target>
+                    <compilerArgs>
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <argLine>--enable-preview</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
