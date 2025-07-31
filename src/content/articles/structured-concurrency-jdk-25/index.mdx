@@ -9,21 +9,9 @@ tags: [java, loom, concurrency]
 
 ## Introduction
 
-The journey of structured concurrency in Java continues to evolve. After exploring the fundamentals in our previous article on [Project Loom: Structured Concurrency in Java](https://blog.rockthejvm.com/structured-concurrency-in-java/), we now dive into the significant improvements introduced in the next version of Java, JDK 25. With JEP 505, structured concurrency reaches its fifth preview, bringing substantial API changes that make concurrent programming even more intuitive and powerful.
+The journey of structured concurrency in Java continues to evolve. After exploring the fundamentals in our previous article on [Project Loom: Structured Concurrency in Java](https://blog.rockthejvm.com/structured-concurrency-in-java/), we now dive into the significant improvements introduced in the next version of Java, JDK 25. With JEP 505, structured concurrency reaches its fifth preview, bringing substantial API changes that make concurrent programming even more intuitive and robust.
 
 This article builds upon the concepts we covered previously, focusing on the key differences and new capabilities introduced in JDK 25. If you're new to structured concurrency, I recommend reading the foundational article first to understand the core concepts.
-
-## What's Changed in JDK 25
-
-JDK 25 introduces several fundamental changes to the structured concurrency API through JEP 505:
-
-1. **Static Factory Methods**: `StructuredTaskScope` is now created via static factory methods instead of public constructors
-2. **Joiner API**: A new, more flexible way to define completion policies
-3. **Enhanced Configuration**: Better support for timeouts, thread factories, and monitoring
-4. **Simplified Common Cases**: The zero-parameter `open()` method covers the most common use case
-5. **Type Safety Improvements**: Better generic type handling for task results
-
-Let's explore these changes by updating our GitHub user example from the previous article.
 
 ## Setting up the project for JDK 25
 
@@ -71,13 +59,13 @@ We'll continue using the same library for logging with an updated version compat
 </dependency>
 ```
 
-At the  time of writing, JDK 25 is still in early access, so make sure to download the latest build from the [OpenJDK website](https://jdk.java.net/25/) and set it up in your IDE. We'll use the build 25-ea+26-3358 for this article.
+At the time of writing, JDK 25 is still in early access, so make sure to download the latest build from the [OpenJDK website](https://jdk.java.net/25/) and set it up in your IDE. We'll use the build `25-ea+26-3358`. If you're interested in the `pom.xml` file, you can find it in the Appendix section at the end of this article.
 
 ## The New API: From Constructors to Factory Methods
 
 The most visible change in JDK 25 is how we create `StructuredTaskScope` instances. Instead of using constructors, we now use static factory methods.
 
-Before we dive into the new API, let's quickly recap the main example we used in the previous article: fetching a GitHub user and their repositories concurrently.
+Before we dive into the new API, let's quickly recap the primary example we used in the previous article: fetching a GitHub user and their repositories concurrently.
 
 First, let's revisit our data structures:
 
@@ -160,7 +148,7 @@ interface FindGitHubUserUseCase {
 }
 ```
 
-The best way to understand the changes in JDK 25 is to look at how we create and use `StructuredTaskScope` instances. In previous versions, we used constructors to create scopes, but JDK 25 introduces static factory methods that simplify the API and make it more intuitive. Let's do it step by step.
+The best way to understand the changes in JDK 25 is to look at how we create and use `StructuredTaskScope` instances. In previous versions, we used constructors to instantiate scopes, but JDK 25 introduces static factory methods that simplify the API and make it more intuitive. Let's do it step by step.
 
 First, let's create the structured scope that will contain our tasks. In JDK 25, we use the `StructuredTaskScope.open()` method to create a new scope:
 
@@ -186,7 +174,7 @@ class FindGitHubUserService implements FindGitHubUserUseCase {
 }
 ```
 
-Since it's the first time we introduced the new class `FindGitHubUserUseCase`, we shared also the boilerplate code for the data structures and interfaces. We'll omit it in the following sections to focus on the changes introduced in JDK 25.
+Since it's the first time we introduced the new class `FindGitHubUserUseCase`, we also shared the boilerplate code for the data structures and interfaces. We'll omit it in the following sections to focus on the changes introduced in JDK 25.
 
 Do you think the introduction of a static factory method is just a cosmetic change? Not at all! In fact, the returned `StructuredTaskScope` instance is quite different from the previous versions:
 
@@ -195,11 +183,11 @@ Do you think the introduction of a static factory method is just a cosmetic chan
 public sealed interface StructuredTaskScope<T, R> extends AutoCloseable
 ```
 
-First, the `StructuredTaskScope` bacame an interface instead of a class. But, it's more than just an interface; it's a **sealed interface**. This means that we cannot implement it directly in user site code, as we did in previous versions. We'll return in a moment to this point.
+First, the `StructuredTaskScope` became an interface instead of a class. But, it's more than just an interface; it's a **sealed interface**. It means that we cannot implement it directly in the user site code, as we did in previous versions. We'll return to this point in a moment.
 
 If you remember, the previous version of `StructuredTaskScope` was generic only on the type variable `T`, which represented the type of the result returned by the `join()` method. In JDK 25, the `StructuredTaskScope` interface is now generic on two type variables: `T` and `R`. The `R` type variable represents the type of the result returned by the `join()` method, and the `T` type variable represents the return type of the subtasks that are forked within the scope.
 
-The `open()` method without parameters is particular, since it's defined as follows
+The `open()` method without parameters is particular, since it's defined as follows:
 
 ```java
 // JDK 25 Code Snippet
@@ -210,7 +198,7 @@ static <T> StructuredTaskScope<T, Void> open() {
 
 We can notice two things. The first, the `R` type variable is bound to `Void`, which means that the `join()` method will not return any value. The only accepted value for `Void` is `null`. The `Void` return type of the joining operation derives from the default joining policy configured by the method, which is the `Joiner.awaitAllSuccessfulOrThrow()`. As we'll see later, instead of explicitly creating the joining policy using a dedicated scope, we'll use the `Joiner` type.
 
-The `Joiner.awaitAllSuccessfulOrThrow()` factory method creates a joining policy comparable to the old `StructuredTaskScope.ShutdownOnFailure` class, which was used to define the default behavior of the scope: "succeed if all subtasks succeed, fail if any subtask fails." This is the most common use case in structured concurrency. In such a policy, the `join()` method always returns `null` if all subtasks succeed.
+The `Joiner.awaitAllSuccessfulOrThrow()` factory method creates a joining policy comparable to the old `StructuredTaskScope.ShutdownOnFailure` class, which was used to define the default behavior of the scope: "succeed if all subtasks succeed, fail if any subtask fails." It is the most common use case in structured concurrency. In such a policy, the `join()` method always returns `null` if all subtasks succeed.
 
 Now, we need to create the subtasks. Nothing changes here; we can still use the `fork()` method to create subtasks within the scope.
 
@@ -249,15 +237,15 @@ try (var scope = StructuredTaskScope.open()) {
 }
 ```
 
-Again, nothing changes here, apparently. The only difference is the type of the exception thrown by the `join()` method. In JDK 25, if any subtask fails, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. If you remember, in the previous versions, the `join()` method threw a `java.util.concurrent.ExecutionException`. The main difference between the two is that the `FailedException` is a unchecked exception, while the `ExecutionException` is an checked exception.
+Again, nothing changes here. The only difference is the type of exception thrown by the `join()` method. In JDK 25, if any subtask fails, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. If you remember, in the previous versions, the `join()` method threw a `java.util.concurrent.ExecutionException`. The main difference between the two is that the `FailedException` is an unchecked exception, while the `ExecutionException` is a checked exception.
 
-Now, that we saw the basic usage of the new API, let's explore the key differences in the concurrency policies introduced in JDK 25.
+Now that we have seen the basic usage of the new API, let's explore the key differences in the concurrency policies introduced in JDK 25.
 
 ## Meet Your New Best Friend: The `Joiner` API
 
 As we saw, the `StructuredTaskScope` in JDK 25 is a sealed interface, which means we cannot implement it directly. Moreover, the interface has only one implementation, which doesn't implement any concurrency policy. In previous versions, we had different implementations of `StructuredTaskScope` that defined different concurrency policies, such as `ShutdownOnFailure`, `ShutdownOnSuccess`, and so on. How are concurrency policies defined in JDK 25, then?
 
-In JDK 25, concurrency policies are defined through a new API called `Joiner`. The `Joiner` API allows us to define how the results of subtasks are combined and how failures are handled.
+In JDK 25, concurrency policies are defined through a new API called `Joiner`. The `Joiner` API allows us to determine how the results of subtasks are combined and how failures are handled.
 
 The JDK offers a set of built-in joiners that cover the most common use cases, and are available as static factory methods on the `Joiner` interface. Let's take a look at how we can use these joiners to define the behavior of our structured task scope.
 
@@ -313,8 +301,7 @@ Caused by: java.lang.RuntimeException: Error finding user with id 'UserId[value=
 
 As expected, the `join()` method throws a `StructuredTaskScope.FailedException`, which wraps the original exception thrown by the failing subtask. Moreover, the `repositories` forked subtask is cancelled, as the concurrency policy promised.
 
-If you remember, in the previous versions, when using the the `StructuredTaskScope.ShutdownOnFailure` class, we had to call also the `throwIfFailed()` method in chain to the `join()` method. In JDK 25, the designers reviewed the API opting for an homogeneous approach among the different concurrency policies. In this way, we lost the possibility to remap the exception thrown by the `join()` method, which was possible in previous versions since the `throwIfFailed()` could had taken a mapping function as parameter. However, in the previous article, we warned about remapping the original exception thrown by the failing subtask, since it was a `Throwable` that potentially could have been an `Error`.
-
+If you remember, in the previous versions, when using the `StructuredTaskScope.ShutdownOnFailure` class, we had to call also the `throwIfFailed()` method in chain to the `join()` method. In JDK 25, the designers reviewed the API, opting for a homogeneous approach among the different concurrency policies. In this way, we lost the possibility to remap the exception thrown by the `join()` method, which was possible in previous versions since the `throwIfFailed()` could have taken a mapping function as a parameter. However, in the previous article, we warned about remapping the original exception thrown by the failing subtask, since it was a `Throwable` that potentially could have been an `Error`.
 
 The second joiner we see is a slightly different version of the previous one, called `AllSuccessful<T>`:
 
@@ -323,7 +310,7 @@ The second joiner we see is a slightly different version of the previous one, ca
 static final class AllSuccessful<T> implements Joiner<T, Stream<Subtask<T>>>
 ```
 
-The class signature should tell you quite soundly what it does: it waits for all subtasks to complete successfully, and returns a stream of all subtasks. If any subtask fails, it throws a `StructuredTaskScope.FailedException` and cancel any left subtask. All subtasks must returns a value of type `T` or a subtype of it.
+The class signature should tell you quite soundly what it does: it waits for all subtasks to complete successfully, and returns a stream of all subtasks. If any subtask fails, it throws a `StructuredTaskScope.FailedException` and cancels any remaining subtasks. All subtasks must return a value of type `T` or a subtype of it.
 
 We can create an instance of this joiner by calling the static factory method `Joiner.allSuccessfulOrThrow()`. So, let's make an example. Let's say we want to fetch concurrently a list of users:
 
@@ -378,7 +365,7 @@ When we run the `main` method, we should see the following output:
 18:18:30.422 [virtual-34] INFO  in.rcard.sc.Main - Repositories found for user 'UserId[value=1]'
 ```
 
-As we can see, the executions of the two subtasks are interleaved, and the results are returned as a list of `GitHubUser` instances. It's very interesting also to look at the list of virtual threads that are executing the subtasks.
+As we can see, the executions of the two subtasks are interleaved, and the results are returned as a list of `GitHubUser` instances. It's also exciting to look at the list of virtual threads that are executing the subtasks.
 
 The next joiner we see is the `AnySuccessful<T>` joiner:
 
@@ -388,7 +375,7 @@ static final class AnySuccessful<T> implements Joiner<T, T>
 
 The joiner is the new version of the `StructuredTaskScope.ShutdownOnSuccess` class we used in previous versions. It waits for any subtask to complete successfully, and returns the result of the first successful subtask. The remaining subtasks are properly cancelled. If all subtasks fail, it throws a `StructuredTaskScope.FailedException`. We can retrieve an instance of this joiner by calling the static factory method `Joiner.anySuccessfulResultOrThrow()`.
 
-If you remember, in the previous article we simulate the two subtasks that fetch a GitHub user repository from a cache and from GitHub directly. The first tasks that succeeds returns its result.
+If you recall, in the previous article, we simulated the two subtasks that fetch a GitHub user repository from a cache and GitHub directly. The first task that succeeds returns its result.
 
 We can copy from the previous article the implementation of the `FindRepositoriesByUserIdPort` using the cache to retrieve information:
 
@@ -429,7 +416,7 @@ class FindRepositoriesByUserIdCache implements FindRepositoriesByUserIdPort {
 }
 ```
 
-As you might remember, the above implementation throws a `NoSuchElementException` if the user is not found in the cache to show that the joiner discard the subtask that fails if any following subtask succeeds. We can now implement the `FindRepositoriesByUserIdPort` to fetch the repositories both from the cache and from GitHub:
+As you might remember, the above implementation throws a `NoSuchElementException` if the user is not found in the cache, indicating that the joiner discards the subtask that fails if any following subtask succeeds. We can now implement the `FindRepositoriesByUserIdPort` to fetch the repositories both from the cache and GitHub:
 
 ```java
 class GitHubCachedRepository implements FindRepositoriesByUserIdPort {
@@ -461,7 +448,7 @@ class GitHubCachedRepository implements FindRepositoriesByUserIdPort {
 }
 ```
 
-As the best practice says, if we retrieve the repositories directly from GitHub, we also add them to the cache for future requests. Let's play with the new service. First, we'll use it to fetch a user that is not in the cache, so it will be fetched from GitHub.
+As the best practice states, if we retrieve the repositories directly from GitHub, we also add them to the cache for future requests. Let's play with the new service. First, we'll use it to fetch a user that is not in the cache, so it will be fetched from GitHub.
 
 ```java
 void main() throws InterruptedException {
@@ -474,7 +461,7 @@ void main() throws InterruptedException {
 }
 ```
 
-We expect the cache to throw an exception since the repositories of the user with `UserId(1L)` are not cached and the repository to complete the execution successfully. As we said, the `AnySuccessful<T>` joiner waits for the first successful task. The output of the execution is, in fact, the following:
+We expect the cache to throw an exception because the user's repositories with `UserId(1L)` are not cached, and the repository cannot complete the execution successfully. As we said, the `AnySuccessful<T>` joiner waits for the first successful task. The output of the execution is, in fact, the following:
 
 ```
 11:53:52.760 [virtual-27] INFO  in.rcard.sc.Main - Finding repositories for user with id 'UserId[value=1]'
@@ -485,7 +472,7 @@ We expect the cache to throw an exception since the repositories of the user wit
 
 As we can see, the cache task throws an exception, and the repository task completes successfully. The computation stops, and the result is the one we expect.
 
-The other left cases behaviors are the same as in the previous versions, and we're not going to cover them in this article. The only difference with the previous versions is that it's not possible to give a remapping function to transform the exception thrown by the `join()` method. We saw the same bahaviour with the previous joiners we saw.
+The other left behaviors are the same as in the previous versions, and we're not going to cover them in this article. The only difference from the earlier versions is that it's not possible to give a remapping function to transform the exception thrown by the `join()` method. We observed the same behavior in the previous joiners.
 
 Until now we saw the new versions of the old structured concurrency policies, but in the JDK 25 there are also new joiners that implement new concurrency policies. Let's see them in action.
 
@@ -493,9 +480,9 @@ Until now we saw the new versions of the old structured concurrency policies, bu
 
 There will be new joiners in JDK 25 that implement new concurrency policies, which are not just variations of the old ones. These joiners provide more flexibility and power to structured concurrency.
 
-The first one is the one we can retrieve using the `Joiner.awaitAll()` method. This joiner waits for all subtasks to complete, regardless of success or failure. It does not throw an exception if any subtask fails, and it always returns a simple `null`. Basically, we can use it when we are no interested in the results of the subtasks, or when our subtasks perform some side effects that we want to wait for, but we don't care about their results.
+The first one is the one we can retrieve using the `Joiner.awaitAll()` method. This joiner waits for all subtasks to complete, regardless of success or failure. It does not throw an exception if any subtask fails, and it always returns a simple `null`. We can use it when we are not interested in the results of the subtasks, or when our subtasks have some side effects that we want to wait for, but we don't care about their results.
 
-Let's built an example that uses this joiner. Let's say we want to preload the cache for some GitHub users before starting the application. First, we need to create a port to retrieve more than one user at a time:
+Let's build an example that uses this joiner. Let's say we want to preload the cache for some GitHub users before starting the application. First, we need to create a port to retrieve more than one user at a time:
 
 ```java
 interface FindRepositoriesByUserIdListPort {
@@ -570,7 +557,7 @@ class FindRepositoriesByUserIdCache implements FindRepositoriesByUserIdPort {
 }
 ```
 
-As you can see, we changed the constructor to preload the cache with the repositories of the user with 1, 2, and 42. Let's use the new port to preload the cache and ask for the `UserId(42)` in the `main` method:
+As you can see, we've updated the constructor to preload the cache with the user's repositories 1, 2, and 42. Let's use the new port to preload the cache and ask for the `UserId(42)` in the `main` method:
 
 ```java
 void main() throws InterruptedException {
@@ -596,9 +583,9 @@ Exception in thread "main" java.util.NoSuchElementException: No cached repositor
 	at in.rcard.sc.Main.main(Main.java:219)
 ```
 
-As expected, even if the subtask that fetches the repositories for the user with `UserId(42L)` fails, the other subtasks complete successfully. In fact, the output shows that the repositories for the users with `UserId(1L)` and `UserId(2L)` are found. So, the `scope.join()` method did not throw an exception, and waited for the end of all the three subtasks. The last exception comes from the implementation of the `cache.findRepositories(new UserId(42L))`, which is not related to the `awaitAll()` joiner.
+As expected, even if the subtask that fetches the repositories for the user with `UserId(42L)` fails, the other subtasks complete successfully. The output shows that the repositories for the users with `UserId(1L)` and `UserId(2L)` are found. So, the `scope.join()` method did not throw an exception, and waited for the end of all three subtasks. The last exception comes from the implementation of the `cache.findRepositories(new UserId(42L))`, which is not related to the `awaitAll()` joiner.
 
-The last joiner we see is the `Joiner.allUntil` joiner. Probably, it's the most powerful joiner introduced in JDK 25. It allows us to define a custom joiner that collects results from all subtasks until a certain condition is met. This joiner can be used to implement complex concurrency patterns. Let's start from the definition of the joiner:
+The last joiner we see is the `Joiner.allUntil` joiner. Probably, it's the most powerful joiner introduced in JDK 25. It allows us to define a custom joiner that collects results from all subtasks until a specific condition is met. This joiner can be used to implement complex concurrency patterns. Let's start with the definition of the joiner:
 
 ```java
 // JDK 25 Code Snippet
@@ -614,9 +601,9 @@ static final class AllSubtasks<T> implements Joiner<T, Stream<Subtask<T>>> {
 }
 ```
 
-The joiner returns a stream of the forked subtasks, instead of a single result. Plus, the joiner takes a `Predicate<Subtask<? extends T>>` as a parameter, which is used to determine when to stop collecting results from the subtasks. In detail, when the predicate evaluates to `true`, the joiner stops collecting results and cancels any remaining subtasks. So, the returned subtasks can be in any state, including `SUCCESS`, `FAILED` for those that thrown an exception during the execution, and `UNAVAILABLE`for those who were cancelled.
+The joiner returns a stream of the forked subtasks, instead of a single result. Plus, the joiner takes a `Predicate<Subtask<? extends T>>` as a parameter, which is used to determine when to stop collecting results from the subtasks. In detail, when the predicate evaluates to `true`, the joiner stops collecting results and cancels any remaining subtasks. So, the returned subtasks can be in any state, including `SUCCESS`, `FAILED` for those that threw an exception during the execution, and `UNAVAILABLE` for those that were cancelled.
 
-As usual, we need an example to understand well how to use this joiner. Let's say we want to fetch the README file from multiple GitHub repositories concurrently, but we want to stop fetching as soon as we find a repository that has a README file. First, we need to create a port to fetch the files' names from a repository:
+As usual, we need an example to understand how to use this joiner effectively. Let's say we want to fetch the README file from multiple GitHub repositories concurrently, but we want to stop fetching as soon as we find a repository that has a README file. First, we need to create a port to fetch the files' names from a repository:
 
 ```java
 interface FindAllRepositoryFilesPort {
@@ -624,7 +611,7 @@ interface FindAllRepositoryFilesPort {
 }
 ```
 
-We can implement this port adding it to the `GitHubRepository` class as follows:
+We can implement this port by adding it to the `GitHubRepository` class as follows:
 
 ```java
 class GitHubRepository
@@ -665,7 +652,7 @@ As we can see, only the `raise4s` repository has a `README.md` file. We added so
 record RepoStructure(Repository repository, List<String> files) {}
 ```
 
-Now, we can use it to implement the use case:
+Now we can use it to implement the use case:
 
 ```java
 interface FirstRepositoryByFileNameUseCase {
@@ -742,7 +729,7 @@ void main() throws InterruptedException {
 }
 ```
 
-We want to find the first repository that has a `README.md` file. If you remember how we configured the delays, a coroutine will throw an exception for the repository `kafkaesque`, and another one will return the files for the `sus4s` repository, which does not contain a `README.md` file. Then, we have the coroutine that will return the files for the `raise4s` repository, which contains the file we are looking for. The last coroutine will never finish, as the joiner will cancel it as soon as it finds the first repository with the `README.md` file.
+We want to find the first repository that has a `README.md` file. A task will throw an exception for the repository `kafkaesque`, and another one will return the files for the `sus4s` repository, which does not contain a `README.md` file. Then, we have the coroutine that will return the files for the `raise4s` repository, which contains the file we are looking for. The last coroutine will never finish, as the joiner will cancel it as soon as it finds the first repository with the `README.md` file.
 
 When we run the `main` method, we should see the following output:
 
@@ -756,10 +743,9 @@ When we run the `main` method, we should see the following output:
 21:48:48.708 [main] INFO  in.rcard.sc.Main - First repository with 'README.md': raise4s
 ```
 
+The logs show exactly what we expected: the coroutine that fetches the files for the `sus4s` repository completes first, but it does not contain the `README.md` file, so it continues to fetch the files for the `raise4s` repository, which contains the file we are looking for. The coroutine that fetches the files for the `kafkaesque` repository threw an exception, which is ignored. The task for the `yaes` repository was never completed since the runtime canceled it.
 
-The logs show exactly what we expected: the coroutine that fetches the files for the `sus4s` repository completes first, but it does not contain the `README.md` file, so it continues to fetch the files for the `raise4s` repository, which contains the file we are looking for. The coroutine that fetches the files for the `kafkaesque` repository thrown an exception, which is ignored. The coroutine for the `yaes` repository never completed since it was cancelled by the runtime.
-
-There no any other predefined joiners in JDK 25, but you can create your own joiners by implementing the `Joiner<T, R>` interface. This allows you to define custom concurrency policies that suit your specific needs. Let's see how in the next section.
+There are no other predefined joiners in JDK 25, but you can create your joiners by implementing the `Joiner<T, R>` interface. It allows you to define custom concurrency policies that suit your specific needs. Let's see how in the next section.
 
 ## Custom Joiners: Implementing Your Own Concurrency Policies
 
