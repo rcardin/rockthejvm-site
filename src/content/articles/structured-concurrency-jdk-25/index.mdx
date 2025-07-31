@@ -1076,7 +1076,180 @@ Our journey through the new structured concurrency features in JDK 25 has been e
 
 ## Appendix A
 
-TODO
+In the previous article about structured concurrency we gave some insights about the internals of the `StructuredTaskScope` class. As we saw , the JDK 25 refactored the concerns of the old `StructuredTaskScope` class to make it more modular and easier to use. In details, we need to understand how the new `StructuredTaskScope` class works together with the `Joiner` class to fully grasp the new structured concurrency features.
+
+We can start by looking at the `open()` method of the `StructuredTaskScope` class, which is the entry point to create a new structured task scope. Let's take the overloaded version that takes a `Joiner` and a configuration function:
+
+```java
+// JDK 25 Code Snippet
+static <T, R> StructuredTaskScope<T, R> open(Joiner<? super T, ? extends R> joiner,
+                                             Function<Configuration, Configuration> configFunction) {
+    Objects.requireNonNull(joiner);
+
+    var config = (ConfigImpl) configFunction.apply(ConfigImpl.defaultConfig());
+    var scope = new StructuredTaskScopeImpl<T, R>(joiner, config.threadFactory(), config.name());
+
+    // schedule timeout
+    Duration timeout = config.timeout();
+    if (timeout != null) {
+        boolean scheduled = false;
+        try {
+            scope.scheduleTimeout(timeout);
+            scheduled = true;
+        } finally {
+            if (!scheduled) {
+                scope.close();  // pop if scheduling timeout failed
+            }
+        }
+    }
+    return scope;
+}
+```
+
+As we previously said, the JDK creates a new instance of the `Configuration` type and applies the configuration function to it. The `defaultConfig()` method returns a default configuration with a virtual thread factory and no name or timeout.
+
+If we set a timeout in the configuration, the `open()` method schedules a timeout for the scope using the `scheduleTimeout()` method. The timeout is scheduled using a separated thread from a `ForkJoinPool`:
+
+```java
+// JDK 25 Code Snippet
+private void scheduleTimeout(Duration timeout) {
+    assert Thread.currentThread() == flock.owner() && timerTask == null;
+    long nanos = TimeUnit.NANOSECONDS.convert(timeout);
+    timerTask = ForkJoinPool.commonPool().schedule(() -> {
+        if (!cancelled) {
+            timeoutExpired = true;
+            cancel();
+        }
+    }, nanos, TimeUnit.NANOSECONDS);
+}
+```
+
+The interesting part comes when we fork a subtask using the `fork()` method:
+
+```java
+// JDK 25 Code Snippet
+@Override
+public <U extends T> Subtask<U> fork(Callable<? extends U> task) {
+    Objects.requireNonNull(task);
+    ensureOwner();
+    ensureNotJoined();
+
+    var subtask = new SubtaskImpl<U>(this, task);
+    // notify joiner, even if cancelled
+    if (joiner.onFork(subtask)) {
+        cancel();
+    }
+    if (!cancelled) {
+        // create thread to run task
+        Thread thread = threadFactory.newThread(subtask);
+        if (thread == null) {
+            throw new RejectedExecutionException("Rejected by thread factory");
+        }
+        // attempt to start the thread
+        try {
+            flock.start(thread);
+        } catch (IllegalStateException e) {
+            // shutdown by another thread, or underlying flock is shutdown due
+            // to unstructured use
+        }
+    }
+    // force owner to join
+    state = ST_FORKED;
+    return subtask;
+}
+```
+
+The scope creates a new instance of the `Subtask` type and calls the configured `joiner` to trigger any custom behavior defined in the `onFork()` method. If the joiner returns `true`, it means that the scope was cancelled, and no further subtasks are allowed to be forked. Otherwise, the scope creates a new thread to run the subtask using the configured thread factory, which by default is a virtual thread factory.
+
+From now on, each single task is responsible for what comes next. The subtasks will run concurrently, and when they complete, they will call the `onComplete()` method of scope:
+
+```java
+// JDK 25 Code Snippet
+static final class SubtaskImpl<T> implements Subtask<T>, Runnable {
+    // A lot of omitted code here...
+
+    @Override
+    public void run() {
+        T result = null;
+        Throwable ex = null;
+        try {
+            result = task.call();
+        } catch (Throwable e) {
+            ex = e;
+        }
+        // nothing to do if scope is cancelled
+        if (scope.isCancelled())
+            return;
+        // set result/exception and invoke onComplete
+        if (ex == null) {
+            this.result = (result != null) ? result : RESULT_NULL;
+        } else {
+            this.result = new AltResult(State.FAILED, ex);
+        }
+        scope.onComplete(this);
+    }
+}
+```
+
+If you're asking what the `AltResult` is, it's a special type that holds the state and the eventual exception of the subtask:
+
+```java
+// JDK 25 Code Snippet
+private static final AltResult RESULT_NULL = new AltResult(Subtask.State.SUCCESS);
+
+private record AltResult(Subtask.State state, Throwable exception) {
+    AltResult(Subtask.State state) {
+        this(state, null);
+    }
+}
+```
+
+ The `onComplete()` method is called to notify the scope that the subtask has completed, and it will invoke the `onComplete()` method of the configured joiner:
+
+```java
+// JDK 25 Code Snippet
+// StructuredTaskScopeImpl.java
+private void onComplete(SubtaskImpl<? extends T> subtask) {
+    assert subtask.state() != Subtask.State.UNAVAILABLE;
+    if (joiner.onComplete(subtask)) {
+        cancel();
+    }
+}
+```
+
+As we can see, the `onComplete()` method of the joiner is called to trigger any custom behavior defined in the `onComplete()` method. If the joiner returns `true`, it means that the scope was cancelled, and no further subtasks are allowed to complete.
+
+The last step is the calling of the `join()` method on the structured task scope:
+
+```java
+// JDK 25 Code Snippet
+@Override
+public R join() throws InterruptedException {
+    ensureOwner();
+    ensureNotJoined();
+    // join started
+    state = ST_JOIN_STARTED;
+    // wait for all subtasks, the scope to be cancelled, or interrupt
+    flock.awaitAll();
+    // throw if timeout expired
+    if (timeoutExpired) {
+        throw new TimeoutException();
+    }
+    cancelTimeout();
+    // all subtasks completed or cancelled
+    state = ST_JOIN_COMPLETED;
+    // invoke joiner to get result
+    try {
+        return joiner.result();
+    } catch (Throwable e) {
+        throw new FailedException(e);
+    }
+}
+```
+
+Despite of the operations on the `flock` object, which is at the base of the structured concurrency implementation (we talked about `ThreadFlock` type in the previous articole), the `join()` method is responsible for invoking the `result()` method of the joiner to retrieve the final result of the scope.
+
+As we said, the new version of the structured concurrency API in JDK 25 is more modular and easier to use, and redistributes the responsibilities between the `StructuredTaskScope` and the `Joiner`, whereas the main workflow is still the same (see [Project Loom: Structured Concurrency in Java - Parent-Children Relationship](https://rockthejvm.com/articles/structured-concurrency-in-java#parent-children-relationship) for further details).
 
 ## Appendix B
 
